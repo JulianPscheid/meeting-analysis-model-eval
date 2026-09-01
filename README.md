@@ -1,4 +1,4 @@
-# Meeting recap evaluation harness
+# Meeting analysis model evaluator
 
 This command line harness runs GGUF models through `llama-server` with a three-message meeting transcript request, records JSONL results, mechanically checks recap or notes structure, and can ask the Codex CLI for a blind transcript-grounded review.
 

@@ -587,7 +587,7 @@ INPUT:
 
 def _judge_once(prompt: str) -> tuple[dict | None, str | None, str]:
     with tempfile.NamedTemporaryFile(
-        mode="w+", encoding="utf-8", prefix="meeting-recap-eval-answer-", suffix=".json"
+        mode="w+", encoding="utf-8", prefix="meeting-analysis-model-eval-answer-", suffix=".json"
     ) as output_file:
         completed = subprocess.run(
             [
