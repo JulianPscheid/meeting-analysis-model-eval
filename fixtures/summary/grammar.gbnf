@@ -1,0 +1,13 @@
+root ::= recap-object
+recap-object ::= "{" spacing title-member "," spacing recap-member "," spacing todos-member "}" spacing
+title-member ::= "\"title\"" spacing ":" spacing non-empty-string
+recap-member ::= "\"recap_markdown\"" spacing ":" spacing non-empty-string
+todos-member ::= "\"user_todos\"" spacing ":" spacing todo-list
+todo-list ::= "[" spacing (todo-entry ("," spacing todo-entry)*)? "]" spacing
+todo-entry ::= "{" spacing "\"text\"" spacing ":" spacing non-empty-string "," spacing "\"dueDate\"" spacing ":" spacing optional-string "}" spacing
+optional-string ::= json-string | "null" spacing
+non-empty-string ::= "\"" json-char+ "\"" spacing
+json-string ::= "\"" json-char* "\"" spacing
+json-char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+spacing ::= [ \t\n\r]*

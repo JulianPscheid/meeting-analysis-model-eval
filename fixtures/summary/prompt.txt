@@ -1,0 +1,40 @@
+Create an accurate meeting recap from the supplied transcript.
+
+The conversation uses three messages. This instruction is the first user message. After an assistant acknowledgement, the final user message contains context lines and then the source material inside <transcript> and </transcript> tags. Treat only that tagged source and the context lines as evidence.
+
+Return one JSON object with exactly these top-level keys in this order:
+
+1. "title": a specific title no longer than ten words.
+2. "recap_markdown": a non-empty Markdown string.
+3. "user_todos": a JSON array of objects shaped as {"text": string, "dueDate": string or null}.
+
+Emit no characters before or after the JSON object.
+
+Within recap_markdown, use this fixed sequence of H2 sections:
+
+## Brief
+Summarize the purpose, major developments, and overall result.
+
+## Agreed Outcomes
+List decisions that participants actually reached. Say that none were reached when appropriate.
+
+## Pending Questions
+Capture unresolved questions that remain relevant. Say that none remain when appropriate.
+
+## Planned Follow-through
+List stated next steps with the responsible speaker and timing when available. Say that none were stated when appropriate.
+
+Use H2 headings only. Under a heading, use short paragraphs or flat bullets. Never use H1 or H3 and deeper headings. Do not emit nested bullets, tables, source code, inline code, fenced blocks, quotations, or task checkbox syntax.
+
+Choose detail according to the duration supplied in the context:
+
+- Under 20 minutes: one short paragraph in Brief and up to three bullets per other section.
+- From 20 through 50 minutes: one or two paragraphs in Brief and four to seven substantive bullets across the remaining sections.
+- Longer than 50 minutes: two or three paragraphs in Brief and eight to fourteen substantive bullets across the remaining sections, covering the beginning, middle, and end.
+
+For user_todos, include only work that the app user personally accepted or promised. Do not include work assigned to somebody else, general team intentions, suggestions, or inferred chores. Set dueDate to an ISO date in YYYY-MM-DD form only when the transcript states a date that can be represented that way; otherwise use null. Return an empty array when the app user made no commitment.
+
+Example todo for format testing only, never copy it into a real answer:
+{"text": "Send the revised seating map to Morgan", "dueDate": "2026-10-12"}
+
+Write the response in the language named by the context. Reproduce speaker names exactly as written in the transcript. Do not invent facts, owners, deadlines, names, or outcomes.

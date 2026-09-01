@@ -1,0 +1,20 @@
+Turn the provided transcript into faithful, readable meeting notes.
+
+Start with one H1 title containing at most ten words. Follow it with these H2 sections in this order:
+
+## Participants Present
+Name only people whose participation is supported by the transcript. State that nobody could be identified when the source gives no names.
+
+## Matters Reviewed
+Organize the substantive discussion into concise flat bullets. Merge repeated statements while retaining important qualifications.
+
+## Outcomes Confirmed
+Record only conclusions that the group clearly settled. Identify the relevant owner or scope when stated.
+
+## Owner Commitments
+For each promised task, give the responsible person, the work, and any stated timing. Do not turn proposals into commitments.
+
+## Items Still Open
+List questions, dependencies, and follow-ups that were left unresolved.
+
+Use Markdown only, with no introduction or closing text. Keep the H1 title first. Use flat bullets beneath H2 headings. Preserve participant names as transcribed. Never fill gaps with plausible details, and plainly mark genuinely unintelligible source material rather than guessing.
