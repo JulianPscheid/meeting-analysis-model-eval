@@ -767,6 +767,197 @@ def _assert_grammar_rules_defined(grammar: str) -> None:
         raise ValueError(f"invalid grammar rule references: {undefined}")
 
 
+def _md_table(headers: list[str], rows: list[list[str]]) -> str:
+    widths = [max(len(h), *(len(r) for r in col)) for h, col in zip(headers, zip(*rows))] if rows else [len(h) for h in headers]
+    head = "| " + " | ".join(h.ljust(w) for h, w in zip(headers, widths)) + " |"
+    sep = "| " + " | ".join("-" * w for w in widths) + " |"
+    body = "\n".join("| " + " | ".join(c.ljust(w) for c, w in zip(row, widths)) + " |" for row in rows)
+    return f"{head}\n{sep}\n{body}" if rows else f"{head}\n{sep}"
+
+
+def _render_compare_report(
+    score_data: dict,
+    judge_data: dict | None,
+    score_path: str,
+    judge_path: str | None,
+) -> str:
+    lines: list[str] = []
+    labels = sorted(score_data.get("summary", {}).keys())
+    lines.append("# Model Comparison Report")
+    lines.append("")
+    lines.append(f"**Score file:** `{score_path}`  ")
+    if judge_path:
+        lines.append(f"**Judge file:** `{judge_path}`  ")
+    lines.append(f"**Labels:** {', '.join(labels) if labels else '(none)'}  ")
+    lines.append("")
+
+    # -- Summary table --
+    lines.append("## Summary")
+    lines.append("")
+    summary = score_data.get("summary", {})
+    rows: list[list[str]] = []
+    for label in labels:
+        info = summary[label]
+        rows.append([
+            label,
+            str(info.get("runs", "")),
+            ", ".join(info.get("intents", [])),
+            str(info.get("finish_stop", "")),
+            str(info.get("structurally_clean", "")),
+            str(info.get("reasoning_present_runs", "")),
+        ])
+    lines.append(_md_table(
+        ["Label", "Runs", "Intents", "Finish Stop", "Structurally Clean", "Reasoning Present"],
+        rows,
+    ))
+    lines.append("")
+
+    # -- Mechanical scores per label --
+    runs = score_data.get("runs", [])
+    lines.append("## Mechanical Scores")
+    lines.append("")
+    for label in labels:
+        label_runs = [r for r in runs if r.get("label") == label]
+        if not label_runs:
+            continue
+        lines.append(f"### {label}")
+        lines.append("")
+        detail_rows: list[list[str]] = []
+        for run in label_runs:
+            intent = run.get("intent", "summary")
+            trial = str(run.get("trial", ""))
+            if intent == "summary":
+                detail_rows.append([
+                    trial,
+                    "✓" if run.get("valid_json") else "✗",
+                    "✓" if run.get("exact_fields_in_order") else "✗",
+                    "✓" if run.get("markdown_contract") else "✗",
+                    "✓" if run.get("todos_shape") else "✗",
+                    str(run.get("todo_count", "")),
+                    str(run.get("duplicate_12grams", "")),
+                    "✓" if not run.get("structurally_bad") else "✗",
+                ])
+            else:
+                detail_rows.append([
+                    trial,
+                    "n/a",
+                    "n/a",
+                    "✓" if run.get("markdown_contract") else "✗",
+                    "n/a",
+                    "n/a",
+                    str(run.get("duplicate_12grams", "")),
+                    "✓" if not run.get("structurally_bad") else "✗",
+                ])
+        lines.append(_md_table(
+            ["Trial", "JSON", "Fields", "Markdown", "Todos Shape", "Todo Count", "Dup 12-grams", "Clean"],
+            detail_rows,
+        ))
+        lines.append("")
+
+    # -- Throughput --
+    has_timings = any(run.get("timings") for run in runs)
+    if has_timings:
+        lines.append("## Throughput")
+        lines.append("")
+        throughput_rows: list[list[str]] = []
+        for label in labels:
+            label_runs = [r for r in runs if r.get("label") == label and r.get("timings")]
+            if not label_runs:
+                continue
+            prompt_speeds = [r["timings"].get("prompt_per_second", 0) for r in label_runs if isinstance(r.get("timings"), dict)]
+            gen_speeds = [r["timings"].get("predicted_per_second", 0) for r in label_runs if isinstance(r.get("timings"), dict)]
+            elapsed = [r.get("elapsed_s", 0) for r in label_runs]
+            avg_prompt = sum(prompt_speeds) / len(prompt_speeds) if prompt_speeds else 0
+            avg_gen = sum(gen_speeds) / len(gen_speeds) if gen_speeds else 0
+            avg_elapsed = sum(elapsed) / len(elapsed) if elapsed else 0
+            throughput_rows.append([
+                label,
+                f"{avg_prompt:.1f}",
+                f"{avg_gen:.1f}",
+                f"{avg_elapsed:.1f}",
+            ])
+        if throughput_rows:
+            lines.append(_md_table(
+                ["Label", "Prompt t/s (avg)", "Generation t/s (avg)", "Elapsed s (avg)"],
+                throughput_rows,
+            ))
+            lines.append("")
+
+    # -- Judge verdicts --
+    if judge_data:
+        lines.append("## Judge Verdicts")
+        lines.append("")
+        judge_summary = judge_data.get("summary", {})
+        judge_rows: list[list[str]] = []
+        for label in sorted(judge_summary.keys()):
+            info = judge_summary[label]
+            unsupported = info.get("unsupported_claims")
+            judge_rows.append([
+                label,
+                str(info.get("trials", "")),
+                str(info.get("judged_trials", "")),
+                str(info.get("judge_errors", "")),
+                str(unsupported) if unsupported is not None else "n/a",
+            ])
+        if judge_rows:
+            lines.append(_md_table(
+                ["Label", "Trials", "Judged", "Errors", "Unsupported Claims"],
+                judge_rows,
+            ))
+            lines.append("")
+
+        judge_runs = judge_data.get("runs", [])
+        for label in sorted(judge_summary.keys()):
+            label_runs = [r for r in judge_runs if r.get("label") == label and r.get("judgment")]
+            if not label_runs:
+                continue
+            lines.append(f"### {label}")
+            lines.append("")
+            for run in label_runs:
+                j = run["judgment"]
+                trial = run.get("trial", "?")
+                lines.append(f"**Trial {trial}**")
+                lines.append("")
+                cov = j.get("coverage", {})
+                lines.append(f"- Coverage: early={'✓' if cov.get('early') else '✗'} "
+                             f"middle={'✓' if cov.get('middle') else '✗'} "
+                             f"late={'✓' if cov.get('late') else '✗'}")
+                lines.append(f"- Length: {j.get('length_verdict', '?')} — {j.get('length_note', '')}")
+                claims = j.get("unsupported_claims", [])
+                lines.append(f"- Unsupported claims: {len(claims)}")
+                for claim in claims:
+                    lines.append(f"  - \"{claim.get('claim', '')}\" — {claim.get('why', '')}")
+                leaks = j.get("structural_leaks", [])
+                if leaks:
+                    lines.append(f"- Structural leaks: {len(leaks)}")
+                    for leak in leaks:
+                        lines.append(f"  - `{leak.get('text', '')}` ({leak.get('kind', '')})")
+                todos = j.get("todos", [])
+                if todos:
+                    lines.append(f"- Todos: {len(todos)}")
+                    for todo in todos:
+                        supported = "✓" if todo.get("supported") else "✗"
+                        user = "✓" if todo.get("assigned_to_app_user") else "✗"
+                        lines.append(f"  - \"{todo.get('text', '')}\" assigned_to_user={user} supported={supported}")
+                lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def command_compare(args: argparse.Namespace) -> int:
+    score_data = json.loads(pathlib.Path(args.score).read_text(encoding="utf-8"))
+    judge_data = None
+    if args.judge:
+        judge_data = json.loads(pathlib.Path(args.judge).read_text(encoding="utf-8"))
+    report = _render_compare_report(score_data, judge_data, args.score, args.judge)
+    if args.out:
+        pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(args.out).write_text(report, encoding="utf-8")
+    else:
+        sys.stdout.write(report)
+    return 0
+
+
 def command_self_test(args: argparse.Namespace) -> int:
     fixtures = pathlib.Path(__file__).resolve().parent / "fixtures"
     summary_prompt = _read_utf8(fixtures / "summary/prompt.txt")
@@ -895,6 +1086,62 @@ def command_self_test(args: argparse.Namespace) -> int:
     )
     assert kv and kv["kv_mib"] == 12.5 and kv["recurrent_mib"] == 1.5
     assert parse_kv_text("llama_context: n_seq_max = 1\nunknown cache = 1 MiB\n") is None
+    compare_score = {
+        "summary": {
+            "alpha": {
+                "runs": 2, "intents": ["summary"], "finish_stop": 2,
+                "structurally_clean": 2, "reasoning_present_runs": 0,
+                "expected_grammar_runs": 2, "reasoning_chars": [0, 0],
+            }
+        },
+        "runs": [
+            {
+                "label": "alpha", "intent": "summary", "trial": 1,
+                "valid_json": True, "exact_fields_in_order": True,
+                "markdown_contract": True, "todos_shape": True,
+                "todo_count": 0, "duplicate_12grams": 0,
+                "structurally_bad": False,
+                "timings": {"prompt_per_second": 100.0, "predicted_per_second": 20.0},
+                "elapsed_s": 5.0,
+            },
+            {
+                "label": "alpha", "intent": "summary", "trial": 2,
+                "valid_json": True, "exact_fields_in_order": True,
+                "markdown_contract": True, "todos_shape": True,
+                "todo_count": 1, "duplicate_12grams": 0,
+                "structurally_bad": False,
+                "timings": {"prompt_per_second": 110.0, "predicted_per_second": 22.0},
+                "elapsed_s": 4.5,
+            },
+        ],
+    }
+    compare_judge = {
+        "summary": {
+            "alpha": {"trials": 2, "judged_trials": 1, "judge_errors": 1, "unsupported_claims": 0}
+        },
+        "runs": [
+            {
+                "label": "alpha", "trial": 1,
+                "judgment": {
+                    "unsupported_claims": [],
+                    "coverage": {"early": True, "middle": True, "late": False},
+                    "length_verdict": "appropriate", "length_note": "OK",
+                    "structural_leaks": [], "todos": [],
+                },
+                "judge_error": None,
+            },
+        ],
+    }
+    report = _render_compare_report(compare_score, compare_judge, "s.json", "j.json")
+    assert "# Model Comparison Report" in report
+    assert "## Summary" in report
+    assert "## Mechanical Scores" in report
+    assert "## Throughput" in report
+    assert "## Judge Verdicts" in report
+    assert "alpha" in report
+    report_no_judge = _render_compare_report(compare_score, None, "s.json", None)
+    assert "## Judge Verdicts" not in report_no_judge
+    assert "## Throughput" in report_no_judge
     print("self-test passed")
     return 0
 
@@ -960,6 +1207,15 @@ def build_parser() -> argparse.ArgumentParser:
     kv = subparsers.add_parser("parse-kv", help="parse first context init from server logs")
     kv.add_argument("logs", nargs="+")
     kv.set_defaults(func=command_parse_kv)
+
+    compare = subparsers.add_parser(
+        "compare",
+        help="generate a side-by-side Markdown comparison from score and judge output",
+    )
+    compare.add_argument("--score", required=True, help="mechanical score JSON from 'score'")
+    compare.add_argument("--judge", help="judge JSON from 'judge' (optional)")
+    compare.add_argument("--out", help="output Markdown path (default: stdout)")
+    compare.set_defaults(func=command_compare)
 
     self_test = subparsers.add_parser("self-test")
     self_test.set_defaults(func=command_self_test)
