@@ -1,0 +1,33 @@
+[project]
+name = "meeting-analysis-model-eval"
+version = "0.1.0"
+description = "Evaluate local GGUF LLMs on meeting transcripts with llama.cpp"
+requires-python = ">=3.11"
+authors = [
+    { name = "Julian Pscheid" }
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "C4", # flake8-comprehensions
+    "B",  # flake8-bugbear
+    "UP", # pyupgrade
+]
+ignore = []
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_optional = true

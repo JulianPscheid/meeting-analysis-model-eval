@@ -1,0 +1,18 @@
+Chris: So, ideas for the new marketing campaign? Throw everything at the wall.
+Jordan: What if we did something with viral videos? Like, a TikTok dance challenge?
+Taylor: No, that's so 2022. We need something edgier. Maybe a cryptic ARG (Alternate Reality Game)?
+Chris: Wait, didn't we try an ARG two years ago and nobody understood it?
+Jordan: Yeah, the budget blew up too. But what if it's a very simple ARG?
+Taylor: I don't know. Let's pivot. What about a massive giveaway? Win a Tesla!
+Chris: We don't have Tesla money, Taylor. Our budget is like, $5000.
+Jordan: Okay, $5000... we could hire some local influencers to do a scavenger hunt in the city.
+Taylor: Oh, I like that! We can hide clues at our partner stores.
+Chris: Yes! A scavenger hunt. But how do we track it?
+Jordan: I can build a simple web app for them to scan QR codes at each location.
+Chris: Jordan, can you actually build that by next week?
+Jordan: Probably. I'll need to use some off-the-shelf components, but yeah, I can get a prototype done by Wednesday.
+Taylor: Great, I'll start contacting the partner stores to get their permission to put up the QR codes. I'll aim to have at least five stores confirmed by Monday.
+Chris: This is actually coming together. Let's run with the scavenger hunt idea. Jordan, prototype by Wednesday. Taylor, 5 stores by Monday. I'll work on the marketing copy for social media.
+Jordan: Wait, what's the prize for the hunt?
+Taylor: Free coffee for a year?
+Chris: Let's figure out the prize later. Just get the tech and the locations sorted first.

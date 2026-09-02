@@ -1,0 +1,10 @@
+Extract all action items and tasks assigned during the meeting from the supplied transcript.
+
+Return one JSON array of objects, where each object represents a single action item and has exactly these keys:
+- "assignee": The name of the person assigned to the task (string).
+- "task": A clear, concise description of the work to be done (string).
+- "deadline": The stated deadline for the task (string). If no deadline is stated, use null.
+- "priority": Either "High", "Medium", or "Low" based on the context. If unclear, default to "Medium" (string).
+
+Do not include tasks that were suggested but not assigned to a specific person. Do not invent tasks.
+Emit no characters before or after the JSON array.

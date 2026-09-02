@@ -1,0 +1,9 @@
+root ::= decision-list
+decision-list ::= "[" spacing (decision-item ("," spacing decision-item)*)? "]" spacing
+decision-item ::= "{" spacing "\"decision\"" spacing ":" spacing string-val "," spacing "\"owner\"" spacing ":" spacing optional-string "," spacing "\"context\"" spacing ":" spacing string-val "," spacing "\"alternatives_considered\"" spacing ":" spacing string-array "}" spacing
+string-val ::= "\"" json-char+ "\"" spacing
+optional-string ::= string-val | "null" spacing
+string-array ::= "[" spacing (string-val ("," spacing string-val)*)? "]" spacing
+json-char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+spacing ::= [ \t\n\r]*

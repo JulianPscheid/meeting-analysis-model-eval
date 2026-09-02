@@ -77,6 +77,27 @@ CONTEXTS="16384" BATCH=512 SWA_FULL=off \
 
 `python3 evaluate.py parse-kv results/bench/kv_*.log` parses the KV allocation from the kv logs.
 
+## Compare
+
+Generate a side-by-side Markdown comparison report from score and judge output:
+
+```sh
+python3 evaluate.py compare \
+  --score results/mechanical.json \
+  --judge results/judge.json \
+  --out results/comparison.md
+```
+
+`--judge` is optional; when omitted the report includes only mechanical scores and throughput. Without `--out`, the report is written to stdout.
+
+The report contains:
+
+- **Summary** table of structural quality across labels
+- **Mechanical Scores** per label with JSON validity, field order, markdown contract, todo shape, and repetition stats
+- **Throughput** averages for prompt evaluation and generation speed (when timing data exists in the score output)
+- **Judge Verdicts** per label with unsupported claims, transcript coverage, length verdict, structural leaks, and todo audit (when judge data is provided)
+
+
 ## Summary envelope contract
 
 Summary output is one JSON object with exactly these keys in this order: `title`, `recap_markdown`, and `user_todos`. `title` and `recap_markdown` are strings. `user_todos` is a list of objects with exactly `text`, a string, and `dueDate`, either a string or `null`. The included summary grammar enforces this shape.
