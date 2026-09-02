@@ -1,0 +1,7 @@
+Alex: Hey everyone, let's get started. Quick sync today. I'm working on the new API endpoints for the user dashboard. Should have a PR up by this afternoon. No blockers on my end.
+Morgan: Great. I'm still looking into that weird caching bug on the frontend. I think I've narrowed it down to the Redis configuration, but I'll need to pair with Sam later to confirm. 
+Sam: Sure, I'm free after 2 PM. Just ping me on Slack. Other than that, I finished the database migration scripts yesterday. They are currently running in staging.
+Alex: Awesome. So, Morgan and Sam will pair on the caching issue. I'll get the API PR out. Anything else?
+Morgan: Nothing from me. 
+Sam: All good here.
+Alex: Cool, thanks everyone. Short and sweet. Talk later!

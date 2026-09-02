@@ -1,0 +1,10 @@
+Extract all strategic, architectural, or significant business decisions made during the meeting from the supplied transcript.
+
+Return one JSON array of objects, where each object represents a single decision and has exactly these keys:
+- "decision": A clear statement of what was decided (string).
+- "owner": The person who made the decision or owns its execution (string). If unclear, use null.
+- "context": A brief explanation of why the decision was made (string).
+- "alternatives_considered": An array of strings representing other options discussed but ultimately rejected. If none were discussed, return an empty array.
+
+Do not include trivial decisions (like scheduling another meeting). Do not invent decisions.
+Emit no characters before or after the JSON array.

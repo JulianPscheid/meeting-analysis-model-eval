@@ -430,7 +430,7 @@ def command_score(args: argparse.Namespace) -> int:
             if not isinstance(record.get("label"), str):
                 raise ValueError(f"{path}:{line_number} has no string label")
             intent = record.get("intent", "summary")
-            if intent not in ("summary", "notes"):
+            if intent not in ("summary", "notes", "action_items", "decision_log"):
                 raise ValueError(f"{path}:{line_number} has unsupported intent {intent!r}")
             intents.add(intent)
             records.append((path, line_number, record, intent))
@@ -491,6 +491,13 @@ def command_score(args: argparse.Namespace) -> int:
                 or not score["markdown_contract"]
                 or bool(score["duplicate_sections"])
                 or score["duplicate_12grams"] > 0
+            )
+        ) or (
+            intent in ("action_items", "decision_log")
+            and (
+                record.get("grammar") != "on"
+                or not score["valid_json"]
+                or not isinstance(json.loads(record.get("content", "{}")), list) if score["valid_json"] else True
             )
         )
         row["truncated"] = record.get("finish") == "length"
@@ -837,7 +844,7 @@ def _render_compare_report(
                     str(run.get("duplicate_12grams", "")),
                     "✓" if not run.get("structurally_bad") else "✗",
                 ])
-            else:
+            elif intent == "notes":
                 detail_rows.append([
                     trial,
                     "n/a",
@@ -846,6 +853,17 @@ def _render_compare_report(
                     "n/a",
                     "n/a",
                     str(run.get("duplicate_12grams", "")),
+                    "✓" if not run.get("structurally_bad") else "✗",
+                ])
+            else:
+                detail_rows.append([
+                    trial,
+                    "✓" if run.get("valid_json") else "✗",
+                    "n/a",
+                    "n/a",
+                    "n/a",
+                    "n/a",
+                    "n/a",
                     "✓" if not run.get("structurally_bad") else "✗",
                 ])
         lines.append(_md_table(
@@ -1153,7 +1171,7 @@ def build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="run one GGUF through llama-server")
     run.add_argument("--prompt-file", required=True)
     run.add_argument("--grammar-file")
-    run.add_argument("--intent", choices=("summary", "notes"), default="summary")
+    run.add_argument("--intent", choices=("summary", "notes", "action_items", "decision_log"), default="summary")
     run.add_argument("--server", required=True)
     run.add_argument("--model", required=True)
     run.add_argument("--label", required=True)

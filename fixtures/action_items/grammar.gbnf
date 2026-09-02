@@ -1,0 +1,9 @@
+root ::= action-list
+action-list ::= "[" spacing (action-item ("," spacing action-item)*)? "]" spacing
+action-item ::= "{" spacing "\"assignee\"" spacing ":" spacing string-val "," spacing "\"task\"" spacing ":" spacing string-val "," spacing "\"deadline\"" spacing ":" spacing optional-string "," spacing "\"priority\"" spacing ":" spacing priority-val "}" spacing
+string-val ::= "\"" json-char+ "\"" spacing
+optional-string ::= string-val | "null" spacing
+priority-val ::= "\"High\"" spacing | "\"Medium\"" spacing | "\"Low\"" spacing
+json-char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+spacing ::= [ \t\n\r]*
