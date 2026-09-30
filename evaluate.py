@@ -274,6 +274,8 @@ def command_run(args: argparse.Namespace) -> int:
     results_path = out / f"{label}.runs.jsonl"
     if results_path.exists():
         raise FileExistsError(f"refusing to append to existing {results_path}")
+    # A manifest from an earlier run must not vouch for the records this run writes.
+    (out / f"{label}.manifest.json").unlink(missing_ok=True)
     log_path = out / f"{label}.server.log"
     port = _free_port()
     command = [
@@ -1311,6 +1313,12 @@ http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
         assert command_run(build_parser().parse_args(failing)) == 1
         assert (temp_path / "failed/incumbent.runs.jsonl").exists()
         assert not (temp_path / "failed/incumbent.manifest.json").exists()
+        (temp_path / "out/incumbent.runs.jsonl").unlink()
+        failing_rerun = run_argv()
+        failing_rerun[failing_rerun.index("512")] = "3"
+        assert command_run(build_parser().parse_args(failing_rerun)) == 1
+        assert (temp_path / "out/incumbent.runs.jsonl").exists()
+        assert not (temp_path / "out/incumbent.manifest.json").exists()
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = pathlib.Path(temp_dir)
         (temp_path / "transcript.txt").write_text("transcript", encoding="utf-8")
