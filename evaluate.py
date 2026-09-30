@@ -1013,6 +1013,7 @@ def command_self_test(args: argparse.Namespace) -> int:
     notes_prompt = _read_utf8(fixtures / "notes/prompt.txt")
     grammar = _read_utf8(fixtures / "summary/grammar.gbnf")
     assert summary_prompt and notes_prompt
+    assert "Deutsch" in _read_utf8(fixtures / "context.de.example.txt")
     assert grammar and "root ::=" in grammar
     _assert_grammar_rules_defined(grammar)
     _assert_grammar_rules_defined('root ::= value\nvalue ::= "ok"\n# ignored-name in a comment\n')
