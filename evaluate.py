@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import argparse
 import collections
+import contextlib
 import hashlib
+import io
 import json
 import pathlib
+import platform
 import re
 import socket
 import subprocess
@@ -133,6 +136,84 @@ def _assert_metal(log_path: pathlib.Path, server: str | None = None) -> None:
         )
 
 
+def _file_sha256(path: str | pathlib.Path) -> str:
+    digest = hashlib.sha256()
+    with pathlib.Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _command_text(command: list[str]) -> str | None:
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return f"{completed.stdout}{completed.stderr}".strip()[:500] or None
+
+
+def _version_lines(text: str | None) -> str | None:
+    # Keep only the build identity; device-init lines carry free-memory figures that vary.
+    lines = [
+        line.strip()
+        for line in (text or "").splitlines()
+        if re.match(r"^\s*(version:|built with)", line)
+    ]
+    return "\n".join(lines) or None
+
+
+def _host() -> dict:
+    host = {"platform": platform.platform(), "machine": platform.machine()}
+    if sys.platform == "darwin":
+        for key, command in (
+            ("model", ["sysctl", "-n", "hw.model"]),
+            ("cpu", ["sysctl", "-n", "machdep.cpu.brand_string"]),
+            ("memory_bytes", ["sysctl", "-n", "hw.memsize"]),
+            ("os_build", ["sw_vers", "-buildVersion"]),
+        ):
+            host[key] = _command_text(command)
+    return host
+
+
+def reuse_key(
+    args: argparse.Namespace,
+    prompt: str,
+    grammar: str | None,
+    context: str | None,
+    transcript: str,
+    kwargs: dict,
+) -> dict:
+    """Everything that must match before stored run records may stand in for a new run."""
+    server = pathlib.Path(args.server)
+    libraries = sorted(server.parent.glob("lib*.dylib")) + sorted(server.parent.glob("lib*.so*"))
+    return {
+        "host": _host(),
+        "server_version": _version_lines(_command_text([str(server), "--version"])),
+        "server_sha256": _file_sha256(server),
+        "server_libraries_sha256": {path.name: _file_sha256(path) for path in libraries},
+        "evaluate_py_sha256": _file_sha256(__file__),
+        "model_sha256": _file_sha256(args.model),
+        "intent": args.intent,
+        "prompt_sha256": _sha256_text(prompt),
+        "grammar_sha256": _sha256_text(grammar) if grammar is not None else None,
+        "context_sha256": _sha256_text(context) if context is not None else None,
+        "transcript_sha256": _sha256_text(transcript),
+        "chat_template_kwargs": json.dumps(kwargs, sort_keys=True),
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "top_k": args.top_k,
+        "min_p": args.min_p,
+        "presence_penalty": args.presence_penalty,
+        "n_ctx": args.n_ctx,
+        "max_tokens": args.max_tokens,
+        "batch": args.batch,
+        "gpu_layers": args.gpu_layers,
+        "swa_full": args.swa_full,
+        "seed": args.seed,
+        "trials": args.trials,
+    }
+
+
 def _first_choice(response: dict) -> dict:
     choices = response.get("choices") or []
     return choices[0] if choices else {}
@@ -145,7 +226,12 @@ def command_run(args: argparse.Namespace) -> int:
         raise ValueError("context, token, batch, and GPU-layer values must be positive")
     # top_k <= 0 means "disabled" in llama.cpp and is a published setting for some
     # families (Spark-X2.5 recommends top_k=-1); rejecting it blocked a real evaluation.
-    if args.temperature < 0 or not 0 < args.top_p <= 1 or args.top_k < -1:
+    if (
+        args.temperature < 0
+        or not 0 < args.top_p <= 1
+        or args.top_k < -1
+        or not 0 <= args.min_p <= 1
+    ):
         raise ValueError("invalid sampling parameters")
     label = args.label
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", label):
@@ -167,11 +253,23 @@ def command_run(args: argparse.Namespace) -> int:
     if not isinstance(kwargs, dict):
         raise ValueError("--chat-template-kwargs must decode to an object")
 
+    key = reuse_key(args, prompt, grammar, context, transcript, kwargs)
+    manifest = {
+        "label": label,
+        "reuse_key": key,
+        "reuse_key_sha256": _sha256_text(json.dumps(key, sort_keys=True)),
+    }
+    rendered_manifest = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    if args.key_only:
+        sys.stdout.write(rendered_manifest)
+        return 0
+
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     results_path = out / f"{label}.runs.jsonl"
     if results_path.exists():
         raise FileExistsError(f"refusing to append to existing {results_path}")
+    (out / f"{label}.manifest.json").write_text(rendered_manifest, encoding="utf-8")
     log_path = out / f"{label}.server.log"
     port = _free_port()
     command = [
@@ -216,6 +314,7 @@ def command_run(args: argparse.Namespace) -> int:
                         "temperature": args.temperature,
                         "top_p": args.top_p,
                         "top_k": args.top_k,
+                        "min_p": args.min_p,
                         "presence_penalty": args.presence_penalty,
                         "repeat_last_n": args.n_ctx,
                         "seed": seed,
@@ -888,6 +987,43 @@ def command_self_test(args: argparse.Namespace) -> int:
             )
         else:
             raise AssertionError("mixed summary and notes records were accepted")
+    with_context = build_messages("p", "t", "9 minutes", "Ann", "English", "Antwortsprache: Deutsch")
+    assert with_context[2]["content"].startswith("Antwortsprache: Deutsch\n\n<transcript>")
+    assert "Respond in" not in with_context[2]["content"]
+    assert _version_lines("load noise (123 MiB free)\nversion: 1 (abc)\nbuilt with clang") == (
+        "version: 1 (abc)\nbuilt with clang"
+    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = pathlib.Path(temp_dir)
+        server = temp_path / "llama-server"
+        server.write_text("#!/bin/sh\necho 'MTL0 (5 MiB free)'\necho 'version: 1 (abc)'\n")
+        server.chmod(0o755)
+        (temp_path / "libllama.dylib").write_bytes(b"lib")
+        model = temp_path / "model.gguf"
+        model.write_bytes(b"gguf")
+        for name, text in (("prompt.txt", "prompt"), ("transcript.txt", "transcript")):
+            (temp_path / name).write_text(text, encoding="utf-8")
+        run_args = build_parser().parse_args(
+            [
+                "run", "--prompt-file", str(temp_path / "prompt.txt"), "--server", str(server),
+                "--model", str(model), "--label", "incumbent",
+                "--transcript", str(temp_path / "transcript.txt"), "--out", str(temp_path / "out"),
+                "--duration", "9 minutes", "--app-user", "Ann", "--language", "English",
+                "--n-ctx", "4096", "--max-tokens", "512", "--batch", "512", "--swa-full", "off",
+                "--temperature", "0.7", "--top-p", "0.8", "--top-k", "20",
+                "--presence-penalty", "1.5", "--key-only",
+            ]
+        )
+        first = reuse_key(run_args, "prompt", None, None, "transcript", {})
+        assert first == reuse_key(run_args, "prompt", None, None, "transcript", {})
+        assert first["server_version"] == "version: 1 (abc)" and first["min_p"] == 0.0
+        assert list(first["server_libraries_sha256"]) == ["libllama.dylib"]
+        assert first != reuse_key(run_args, "prompt", None, None, "transcript", {"enable_thinking": False})
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            assert command_run(run_args) == 0
+        assert json.loads(printed.getvalue())["reuse_key"]["model_sha256"] == _sha256_text("gguf")
+        assert not (temp_path / "out").exists()
     kv = parse_kv_text(
         "llama_context: n_seq_max = 1\n"
         "llama_kv_cache: size = 12.50 MiB (MTL0), 4 layers\n"
@@ -926,12 +1062,19 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--temperature", type=float, required=True)
     run.add_argument("--top-p", type=float, required=True)
     run.add_argument("--top-k", type=int, required=True)
+    # llama-server otherwise applies its own min_p default (0.05), which few publishers use.
+    run.add_argument("--min-p", type=float, default=0.0)
     run.add_argument("--presence-penalty", type=float, required=True)
     run.add_argument("--grammar", choices=("on", "off"))
     run.add_argument("--chat-template-kwargs", default="{}")
     run.add_argument("--load-timeout", type=int, default=600)
     run.add_argument("--request-timeout", type=int, default=1800)
     run.add_argument("--require-metal", action=argparse.BooleanOptionalAction, default=True)
+    run.add_argument(
+        "--key-only",
+        action="store_true",
+        help="print the manifest reuse key and exit without starting llama-server",
+    )
     run.set_defaults(func=command_run)
 
     score = subparsers.add_parser("score", help="mechanically score JSONL run files")
