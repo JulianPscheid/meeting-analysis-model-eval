@@ -742,6 +742,14 @@ def _validate_judgment(value: object) -> dict:
         and all(isinstance(value["coverage"].get(key), bool) for key in ("early", "middle", "late"))
         and value["length_verdict"] in {"too_short", "appropriate", "too_long"}
         and isinstance(value["length_note"], str)
+        and all(
+            isinstance(todo, dict)
+            and all(
+                isinstance(todo.get(flag), bool)
+                for flag in ("assigned_to_app_user", "supported", "date_stated_in_transcript")
+            )
+            for todo in value["todos"]
+        )
     )
     if not valid:
         raise ValueError("judge output has invalid fields")
@@ -1129,6 +1137,13 @@ def command_self_test(args: argparse.Namespace) -> int:
         "extra": "allowed",
     }
     assert _validate_judgment(judgment) == judgment
+    for bad_todo in (
+        "fix the deck",
+        {"text": "t", "assigned_to_app_user": None, "supported": True, "date_stated_in_transcript": True},
+        {"text": "t", "assigned_to_app_user": True, "supported": "false", "date_stated_in_transcript": True},
+    ):
+        bad_judgment, bad_error = _parse_judgment_text(json.dumps({**judgment, "todos": [bad_todo]}))
+        assert bad_judgment is None and bad_error and "invalid fields" in bad_error
     counts = _judgment_counts(
         [
             judgment,
