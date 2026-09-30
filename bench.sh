@@ -66,10 +66,11 @@ case "$mode" in
       [[ "$label" != "$model" && "$label" =~ ^[A-Za-z0-9_.-]+$ ]] || usage
       for context in $contexts; do
         log="$out_dir/kv_${label}_ctx${context}_swa-${swa_full}.log"
+        # Stock macOS bash 3.2 treats an empty "${extra[@]}" as unbound under set -u.
         extra=()
         [[ "$swa_full" == on ]] && extra+=(--swa-full)
         "$bin_dir/llama-server" -m "$model" -c "$context" -ngl 999 -b "$batch" \
-          -fa on "${extra[@]}" -lv 10 --port "$port" --host 127.0.0.1 -np 1 \
+          -fa on ${extra[@]+"${extra[@]}"} -lv 10 --port "$port" --host 127.0.0.1 -np 1 \
           >"$log" 2>&1 &
         active_pid=$!
         ready=0
