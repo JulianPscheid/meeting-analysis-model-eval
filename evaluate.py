@@ -20,6 +20,7 @@ import pathlib
 import platform
 import re
 import socket
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -394,7 +395,51 @@ def _repetition(text: str, size: int = 12) -> tuple[int, int]:
     return repeated, max(grams.values(), default=0)
 
 
-def score_content(content: str, transcript: str, prompt: str | None = None) -> dict:
+def _prompt_leaks(text: str, prompt: str | None, transcript: str, size: int = 8) -> list[str] | None:
+    """Output spans sharing a size-word run with the prompt that the transcript does not contain."""
+    if prompt is None:
+        return None
+
+    def grams(value: str) -> set[tuple[str, ...]]:
+        words = [word.casefold() for word in re.findall(r"\w+", value)]
+        return {tuple(words[index : index + size]) for index in range(len(words) - size + 1)}
+
+    copied = grams(prompt) - grams(transcript)
+    words = re.findall(r"\w+", text)
+    keys = [word.casefold() for word in words]
+    covered = [False] * len(words)
+    for index in range(len(words) - size + 1):
+        if tuple(keys[index : index + size]) in copied:
+            covered[index : index + size] = [True] * size
+    spans, current = [], []
+    for word, hit in zip(words, covered):
+        if hit:
+            current.append(word)
+        elif current:
+            spans.append(" ".join(current))
+            current = []
+    if current:
+        spans.append(" ".join(current))
+    return spans
+
+
+def _h2_headings(text: str) -> list[str]:
+    return [
+        match.group(1).strip()
+        for line in text.splitlines()
+        if (match := re.match(r"^##\s+(.+?)\s*$", line))
+    ]
+
+
+def _untranslated_headings(text: str, prompt: str | None) -> list[str]:
+    """H2 headings copied verbatim from the prompt, for arms whose context asks for another language."""
+    prompt_headings = {heading.casefold() for heading in _prompt_headings(prompt or "")}
+    return [heading for heading in _h2_headings(text) if heading.casefold() in prompt_headings]
+
+
+def score_content(
+    content: str, transcript: str, prompt: str | None = None, translated_headings: bool = False
+) -> dict:
     parsed = None
     error = None
     try:
@@ -450,7 +495,11 @@ def score_content(content: str, transcript: str, prompt: str | None = None) -> d
         or "```" in recap
         or re.search(r"`[^`]+`", recap)
     )
-    duplicate_12grams, worst_12gram = _repetition(recap if isinstance(recap, str) else content)
+    recap_text = recap if isinstance(recap, str) else content
+    title = parsed.get("title") if isinstance(parsed, dict) else None
+    duplicate_12grams, worst_12gram = _repetition(recap_text)
+    sections = _h2_headings(recap_text)
+    found = {section.casefold() for section in sections}
     return {
         "valid_json": error is None,
         "json_error": error,
@@ -459,12 +508,25 @@ def score_content(content: str, transcript: str, prompt: str | None = None) -> d
         "todo_count": len(todos) if isinstance(todos, list) else None,
         "todos": todo_rows,
         "markdown_contract": not bad_markdown,
+        "title_words": len(title.split()) if isinstance(title, str) else None,
+        "sections": sections,
+        "missing_sections": (
+            [section for section in _prompt_headings(prompt) if section.casefold() not in found]
+            if prompt is not None and not translated_headings
+            else None
+        ),
+        "untranslated_headings": (
+            _untranslated_headings(recap_text, prompt) if translated_headings else None
+        ),
+        "prompt_leaks": _prompt_leaks(
+            f"{title if isinstance(title, str) else ''}\n{recap_text}", prompt, transcript
+        ),
         "duplicate_12grams": duplicate_12grams,
         "worst_12gram": worst_12gram,
     }
 
 
-def _notes_prompt_headings(prompt: str) -> list[str]:
+def _prompt_headings(prompt: str) -> list[str]:
     return [
         match.group(1).strip()
         for line in prompt.splitlines()
@@ -473,7 +535,12 @@ def _notes_prompt_headings(prompt: str) -> list[str]:
 
 
 def score_notes_content(
-    content: str, required: list[str], required_sections_source: str = "prompt"
+    content: str,
+    required: list[str],
+    required_sections_source: str = "prompt",
+    prompt: str | None = None,
+    transcript: str = "",
+    translated_headings: bool = False,
 ) -> dict:
     lines = content.splitlines()
     nonempty = [line for line in lines if line.strip()]
@@ -491,6 +558,12 @@ def score_notes_content(
     ]
     duplicate_12grams, worst_12gram = _repetition(content)
     title_words = h1[0][2:].split() if h1 else []
+    # Translated section names cannot match the prompt's literal headings; require the count.
+    sections_present = (
+        len(section_counts) >= len(required)
+        if translated_headings
+        else all(section.casefold() in section_counts for section in required)
+    )
     return {
         "non_empty": bool(content.strip()),
         "markdown_contract": bool(
@@ -498,12 +571,18 @@ def score_notes_content(
             and nonempty[0] in h1
             and len(h1) == 1
             and len(title_words) <= 10
-            and (not required or all(section.casefold() in section_counts for section in required))
+            and (not required or sections_present)
         ),
         "required_sections_source": required_sections_source,
-        "missing_sections": [
-            section for section in required if section.casefold() not in section_counts
-        ],
+        "missing_sections": (
+            None
+            if translated_headings
+            else [section for section in required if section.casefold() not in section_counts]
+        ),
+        "untranslated_headings": (
+            _untranslated_headings(content, prompt) if translated_headings else None
+        ),
+        "prompt_leaks": _prompt_leaks(content, prompt, transcript),
         "duplicate_sections": duplicate_sections,
         "duplicate_section_count": sum(count - 1 for count in section_counts.values()),
         "duplicate_12grams": duplicate_12grams,
@@ -515,7 +594,9 @@ def command_score(args: argparse.Namespace) -> int:
     transcript = pathlib.Path(args.transcript).read_text(encoding="utf-8")
     expected_transcript_hash = _sha256_text(transcript)
     prompt = _read_utf8(args.prompt_file) if args.prompt_file else None
-    required_notes_sections = _notes_prompt_headings(prompt) if prompt is not None else []
+    if args.translated_headings and prompt is None:
+        raise ValueError("--translated-headings requires --prompt-file")
+    required_notes_sections = _prompt_headings(prompt) if prompt is not None else []
     records = []
     intents = set()
     for path_arg in args.results:
@@ -541,12 +622,15 @@ def command_score(args: argparse.Namespace) -> int:
     rows = []
     for path, line_number, record, intent in records:
         score = (
-            score_content(record.get("content", ""), transcript, prompt)
+            score_content(record.get("content", ""), transcript, prompt, args.translated_headings)
             if intent == "summary"
             else score_notes_content(
                 record.get("content", ""),
                 required_notes_sections,
                 "prompt" if prompt is not None else "none",
+                prompt,
+                transcript,
+                args.translated_headings,
             )
         )
         row = {
@@ -572,7 +656,8 @@ def command_score(args: argparse.Namespace) -> int:
             record.get("error") is not None
             or record.get("finish") != "stop"
             or record.get("transcript_sha256") != expected_transcript_hash
-            or record.get("reasoning_chars") != 0
+            or (not args.allow_reasoning and record.get("reasoning_chars") != 0)
+            or bool(score["untranslated_headings"])
         )
         structurally_bad = common_bad or (
             intent == "summary"
@@ -612,7 +697,19 @@ def command_score(args: argparse.Namespace) -> int:
                 isinstance(row["reasoning_chars"], int) and row["reasoning_chars"] > 0
                 for row in selected
             ),
+            "untranslated_heading_runs": sum(bool(row["untranslated_headings"]) for row in selected),
+            "prompt_leak_runs": sum(bool(row["prompt_leaks"]) for row in selected),
         }
+        # Same-session speed from the quality runs themselves; compare arms as ratios.
+        for field in ("prompt_per_second", "predicted_per_second"):
+            speeds = [
+                row["timings"][field]
+                for row in selected
+                if isinstance(row["timings"], dict)
+                and isinstance(row["timings"].get(field), (int, float))
+            ]
+            summary[f"median_{field}"] = statistics.median(speeds) if speeds else None
+            summary[f"min_{field}"] = min(speeds) if speeds else None
         by_label[label] = summary
     output = {"summary": by_label, "runs": rows}
     rendered = json.dumps(output, ensure_ascii=False, indent=2) + "\n"
@@ -875,7 +972,7 @@ def command_self_test(args: argparse.Namespace) -> int:
     assert grammar and "root ::=" in grammar
     _assert_grammar_rules_defined(grammar)
     _assert_grammar_rules_defined('root ::= value\nvalue ::= "ok"\n# ignored-name in a comment\n')
-    required_notes_sections = _notes_prompt_headings(notes_prompt)
+    required_notes_sections = _prompt_headings(notes_prompt)
     assert required_notes_sections == [
         "Participants Present",
         "Matters Reviewed",
@@ -925,6 +1022,47 @@ def command_self_test(args: argparse.Namespace) -> int:
     assert score_content(copied_todo, "transcript")["todos"][0][
         "text_verbatim_in_prompt"
     ] is None
+    assert score_content(clean, "transcript", summary_prompt)["missing_sections"] == [
+        "Agreed Outcomes",
+        "Pending Questions",
+        "Planned Follow-through",
+    ]
+    leaked = json.dumps(
+        {
+            "title": "T",
+            "recap_markdown": "## Brief\n\nExample todo for format testing only, never copy it.",
+            "user_todos": [],
+        }
+    )
+    assert score_content(leaked, "transcript", summary_prompt)["prompt_leaks"] == [
+        "Example todo for format testing only never copy it"
+    ]
+    assert score_content(leaked, "Example todo for format testing only, never copy it", summary_prompt)[
+        "prompt_leaks"
+    ] == []
+    assert score_content(clean, "transcript", summary_prompt)["prompt_leaks"] == []
+    assert score_content(clean, "transcript")["prompt_leaks"] is None
+    german = json.dumps(
+        {"title": "T", "recap_markdown": "## Kurzfassung\n\nA\n\n## Agreed Outcomes\n\nB", "user_todos": []}
+    )
+    assert score_content(german, "transcript", summary_prompt, True)["untranslated_headings"] == [
+        "Agreed Outcomes"
+    ]
+    assert score_content(german, "transcript", summary_prompt)["untranslated_headings"] is None
+    german_notes = (
+        "# Sitzung\n\n## Teilnehmende\n- A\n\n## Besprochene Themen\n- B\n\n"
+        "## Beschlüsse\n- C\n\n## Zusagen\n- D\n\n## Offene Punkte\n- E\n"
+    )
+    translated_notes = score_notes_content(
+        german_notes, required_notes_sections, "prompt", notes_prompt, "transcript", True
+    )
+    assert translated_notes["markdown_contract"] and translated_notes["untranslated_headings"] == []
+    assert translated_notes["missing_sections"] is None
+    assert not score_notes_content(german_notes, required_notes_sections)["markdown_contract"]
+    assert score_notes_content(
+        german_notes + "\n## Items Still Open\n- F\n",
+        required_notes_sections, "prompt", notes_prompt, "transcript", True,
+    )["untranslated_headings"] == ["Items Still Open"]
     judgment = {
         "unsupported_claims": [],
         "coverage": {"early": True, "middle": True, "late": False},
@@ -979,6 +1117,8 @@ def command_self_test(args: argparse.Namespace) -> int:
                     prompt_file=str(prompt_path),
                     out=None,
                     results=[str(results_path)],
+                    translated_headings=False,
+                    allow_reasoning=False,
                 )
             )
         except ValueError as error:
@@ -1024,6 +1164,45 @@ def command_self_test(args: argparse.Namespace) -> int:
             assert command_run(run_args) == 0
         assert json.loads(printed.getvalue())["reuse_key"]["model_sha256"] == _sha256_text("gguf")
         assert not (temp_path / "out").exists()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = pathlib.Path(temp_dir)
+        (temp_path / "transcript.txt").write_text("transcript", encoding="utf-8")
+        (temp_path / "prompt.txt").write_text(summary_prompt, encoding="utf-8")
+        base = {
+            "label": "arm",
+            "intent": "summary",
+            "grammar": "on",
+            "transcript_sha256": _sha256_text("transcript"),
+            "finish": "stop",
+            "error": None,
+        }
+        german_clean = json.dumps(
+            {"title": "T", "recap_markdown": "## Kurzfassung\n\nFakten", "user_todos": []}
+        )
+        rows = [
+            {**base, "content": german, "reasoning_chars": 0, "timings": {"prompt_per_second": 100.0}},
+            {**base, "content": german_clean, "reasoning_chars": 5, "timings": {"prompt_per_second": 300.0}},
+            {**base, "content": german_clean, "reasoning_chars": 0, "timings": {"prompt_per_second": 200.0}},
+        ]
+        (temp_path / "arm.runs.jsonl").write_text(
+            "\n".join(json.dumps(row) for row in rows), encoding="utf-8"
+        )
+        command_score(
+            argparse.Namespace(
+                transcript=str(temp_path / "transcript.txt"),
+                prompt_file=str(temp_path / "prompt.txt"),
+                out=str(temp_path / "out.json"),
+                results=[str(temp_path / "arm.runs.jsonl")],
+                translated_headings=True,
+                allow_reasoning=True,
+            )
+        )
+        scored = json.loads((temp_path / "out.json").read_text(encoding="utf-8"))
+        assert [row["structurally_bad"] for row in scored["runs"]] == [True, False, False]
+        assert scored["summary"]["arm"]["untranslated_heading_runs"] == 1
+        assert scored["summary"]["arm"]["median_prompt_per_second"] == 200.0
+        assert scored["summary"]["arm"]["min_prompt_per_second"] == 100.0
+        assert scored["summary"]["arm"]["median_predicted_per_second"] is None
     kv = parse_kv_text(
         "llama_context: n_seq_max = 1\n"
         "llama_kv_cache: size = 12.50 MiB (MTL0), 4 layers\n"
@@ -1081,6 +1260,16 @@ def build_parser() -> argparse.ArgumentParser:
     score.add_argument("--prompt-file")
     score.add_argument("--transcript", required=True)
     score.add_argument("--out")
+    score.add_argument(
+        "--translated-headings",
+        action="store_true",
+        help="the context asks for another language: a heading copied from the prompt is bad",
+    )
+    score.add_argument(
+        "--allow-reasoning",
+        action="store_true",
+        help="do not count reasoning_chars as bad (an intentional thinking-on arm)",
+    )
     score.add_argument("results", nargs="+")
     score.set_defaults(func=command_score)
 
