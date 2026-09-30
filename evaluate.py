@@ -993,7 +993,7 @@ def command_parse_kv(args: argparse.Namespace) -> int:
 def captions_to_text(vtt: str) -> str:
     """WebVTT captions to plain lines, dropping the rolling repeats of automatic captions."""
     lines: list[str] = []
-    for raw in vtt.splitlines():
+    for raw in vtt.removeprefix("\ufeff").splitlines():
         line = raw.strip()
         if not line or line == "WEBVTT" or "-->" in line or re.match(r"^(Kind|Language):", line):
             continue
@@ -1372,6 +1372,7 @@ http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
         "00:00:01.000 --> 00:00:02.000 align:start\nguten<00:00:01.500><c> Morgen</c>\n\n"
         "00:00:02.000 --> 00:00:03.000\nguten Morgen\nes geht um 1107,30 &amp; mehr\n"
     ) == "guten Morgen\nes geht um 1107,30 & mehr\n"
+    assert captions_to_text("\ufeffWEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhallo\n") == "hallo\n"
     kv = parse_kv_text(
         "llama_context: n_seq_max = 1\n"
         "llama_kv_cache: size = 12.50 MiB (MTL0), 4 layers\n"
