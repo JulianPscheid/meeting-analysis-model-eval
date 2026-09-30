@@ -14,6 +14,7 @@ import argparse
 import collections
 import contextlib
 import hashlib
+import html
 import io
 import json
 import pathlib
@@ -970,6 +971,28 @@ def command_parse_kv(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def captions_to_text(vtt: str) -> str:
+    """WebVTT captions to plain lines, dropping the rolling repeats of automatic captions."""
+    lines: list[str] = []
+    for raw in vtt.splitlines():
+        line = raw.strip()
+        if not line or line == "WEBVTT" or "-->" in line or re.match(r"^(Kind|Language):", line):
+            continue
+        line = html.unescape(re.sub(r"<[^>]*>", "", line)).strip()
+        if line and (not lines or lines[-1] != line):
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def command_captions(args: argparse.Namespace) -> int:
+    text = captions_to_text(_read_utf8(args.vtt))
+    if args.out:
+        pathlib.Path(args.out).write_text(text, encoding="utf-8")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def _assert_grammar_rules_defined(grammar: str) -> None:
     definitions = set(
         re.findall(r"(?m)^([A-Za-z][A-Za-z0-9_-]*)\s*::=", grammar)
@@ -1250,6 +1273,11 @@ def command_self_test(args: argparse.Namespace) -> int:
         assert scored["summary"]["arm"]["median_prompt_per_second"] == 200.0
         assert scored["summary"]["arm"]["min_prompt_per_second"] == 100.0
         assert scored["summary"]["arm"]["median_predicted_per_second"] is None
+    assert captions_to_text(
+        "WEBVTT\nKind: captions\nLanguage: de\n\n"
+        "00:00:01.000 --> 00:00:02.000 align:start\nguten<00:00:01.500><c> Morgen</c>\n\n"
+        "00:00:02.000 --> 00:00:03.000\nguten Morgen\nes geht um 1107,30 &amp; mehr\n"
+    ) == "guten Morgen\nes geht um 1107,30 & mehr\n"
     kv = parse_kv_text(
         "llama_context: n_seq_max = 1\n"
         "llama_kv_cache: size = 12.50 MiB (MTL0), 4 layers\n"
@@ -1339,6 +1367,11 @@ def build_parser() -> argparse.ArgumentParser:
     kv = subparsers.add_parser("parse-kv", help="parse first context init from server logs")
     kv.add_argument("logs", nargs="+")
     kv.set_defaults(func=command_parse_kv)
+
+    captions = subparsers.add_parser("captions", help="convert WebVTT captions to a transcript")
+    captions.add_argument("vtt")
+    captions.add_argument("--out")
+    captions.set_defaults(func=command_captions)
 
     self_test = subparsers.add_parser("self-test")
     self_test.set_defaults(func=command_self_test)
