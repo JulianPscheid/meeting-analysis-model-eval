@@ -603,6 +603,7 @@ def command_score(args: argparse.Namespace) -> int:
     if args.translated_headings and prompt is None:
         raise ValueError("--translated-headings requires --prompt-file")
     required_notes_sections = _prompt_headings(prompt) if prompt is not None else []
+    prompt_hash = _sha256_text(prompt) if prompt is not None else None
     records = []
     intents = set()
     for path_arg in args.results:
@@ -618,6 +619,11 @@ def command_score(args: argparse.Namespace) -> int:
             intent = record.get("intent", "summary")
             if intent not in ("summary", "notes"):
                 raise ValueError(f"{path}:{line_number} has unsupported intent {intent!r}")
+            # Heading and leak checks read --prompt-file, so it must be the prompt the run used.
+            if prompt_hash is not None and record.get("prompt_sha256") not in (None, prompt_hash):
+                raise ValueError(
+                    f"{path}:{line_number} prompt_sha256 does not match --prompt-file {args.prompt_file}"
+                )
             intents.add(intent)
             records.append((path, line_number, record, intent))
     if len(intents) > 1:
@@ -1299,6 +1305,7 @@ http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
             "intent": "summary",
             "grammar": "on",
             "transcript_sha256": _sha256_text("transcript"),
+            "prompt_sha256": _sha256_text(summary_prompt),
             "finish": "stop",
             "error": None,
         }
@@ -1329,6 +1336,22 @@ http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
         assert scored["summary"]["arm"]["median_prompt_per_second"] == 200.0
         assert scored["summary"]["arm"]["min_prompt_per_second"] == 100.0
         assert scored["summary"]["arm"]["median_predicted_per_second"] is None
+        (temp_path / "other.txt").write_text("another prompt", encoding="utf-8")
+        try:
+            command_score(
+                argparse.Namespace(
+                    transcript=str(temp_path / "transcript.txt"),
+                    prompt_file=str(temp_path / "other.txt"),
+                    out=None,
+                    results=[str(temp_path / "arm.runs.jsonl")],
+                    translated_headings=False,
+                    allow_reasoning=False,
+                )
+            )
+        except ValueError as error:
+            assert str(error).endswith(f"prompt_sha256 does not match --prompt-file {temp_path / 'other.txt'}")
+        else:
+            raise AssertionError("a record scored against a different prompt was accepted")
     assert captions_to_text(
         "WEBVTT\nKind: captions\nLanguage: de\n\n"
         "00:00:01.000 --> 00:00:02.000 align:start\nguten<00:00:01.500><c> Morgen</c>\n\n"

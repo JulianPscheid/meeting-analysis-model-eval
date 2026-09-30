@@ -92,7 +92,7 @@ Summary output is one JSON object with exactly these keys in this order: `title`
 
 ## Use your own prompt and grammar
 
-Pass your instruction text with `--prompt-file`. Its exact UTF-8 contents become the first user message. For summary runs, pass an optional GBNF file with `--grammar-file`; notes runs do not accept a grammar. The mechanical scorer reads the prompt to detect copied prompt text and required `## ` sections, so `score --prompt-file` must be the prompt matching the records' intent. The judge reads the applicable prompt to apply its duration and detail contract, using `--summary-prompt-file` or `--notes-prompt-file` according to the intents in the run records.
+Pass your instruction text with `--prompt-file`. Its exact UTF-8 contents become the first user message. For summary runs, pass an optional GBNF file with `--grammar-file`; notes runs do not accept a grammar. The mechanical scorer reads the prompt to detect copied prompt text and required `## ` sections, so `score --prompt-file` must be the prompt matching the records' intent; `score` stops with an error when a record's `prompt_sha256` differs from that file. The judge reads the applicable prompt to apply its duration and detail contract, using `--summary-prompt-file` or `--notes-prompt-file` according to the intents in the run records.
 
 ## Context and response language
 
