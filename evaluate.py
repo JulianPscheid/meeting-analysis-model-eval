@@ -821,6 +821,24 @@ def _judge_with_retry(prompt: str) -> tuple[dict | None, str | None, str | None]
     return None, "; retry: ".join(errors), judge_raw
 
 
+def _judgment_counts(judged: list[dict]) -> dict:
+    """Typed fields first: leak kinds and todo flags hold up across judge runs; claim counts drift."""
+    leaks = [leak for item in judged for leak in item["structural_leaks"] if isinstance(leak, dict)]
+    todos = [todo for item in judged for todo in item["todos"] if isinstance(todo, dict)]
+    return {
+        "structural_leaks": dict(collections.Counter(str(leak.get("kind")) for leak in leaks)),
+        "todos": len(todos),
+        "todos_not_assigned_to_app_user": sum(
+            todo.get("assigned_to_app_user") is False for todo in todos
+        ),
+        "todos_unsupported": sum(todo.get("supported") is False for todo in todos),
+        "todos_date_not_in_transcript": sum(
+            todo.get("date_stated_in_transcript") is False for todo in todos
+        ),
+        "unsupported_claims": sum(len(item["unsupported_claims"]) for item in judged),
+    }
+
+
 def command_judge(args: argparse.Namespace) -> int:
     transcript = pathlib.Path(args.transcript).read_text(encoding="utf-8")
     transcript_hash = _sha256_text(transcript)
@@ -895,8 +913,11 @@ def command_judge(args: argparse.Namespace) -> int:
             "trials": len(selected),
             "judged_trials": len(judged),
             "judge_errors": judge_errors,
-            "unsupported_claims": (
-                sum(len(item["unsupported_claims"]) for item in judged) if not judge_errors else None
+            # A missing judgment is not zero findings, so totals stay null on any judge error.
+            **(
+                _judgment_counts(judged)
+                if not judge_errors
+                else dict.fromkeys(_judgment_counts([]), None)
             ),
         }
     rendered = json.dumps({"summary": summary, "runs": results}, ensure_ascii=False, indent=2) + "\n"
@@ -1073,6 +1094,32 @@ def command_self_test(args: argparse.Namespace) -> int:
         "extra": "allowed",
     }
     assert _validate_judgment(judgment) == judgment
+    counts = _judgment_counts(
+        [
+            judgment,
+            {
+                **judgment,
+                "unsupported_claims": [{"claim": "x", "why": "y"}],
+                "structural_leaks": [{"text": "a", "kind": "prompt_example"}],
+                "todos": [
+                    {
+                        "text": "t",
+                        "assigned_to_app_user": False,
+                        "supported": False,
+                        "date_stated_in_transcript": True,
+                    }
+                ],
+            },
+        ]
+    )
+    assert counts == {
+        "structural_leaks": {"prompt_example": 1},
+        "todos": 1,
+        "todos_not_assigned_to_app_user": 1,
+        "todos_unsupported": 1,
+        "todos_date_not_in_transcript": 0,
+        "unsupported_claims": 1,
+    }
     malformed = (
         '{"unsupported_claims":[],"coverage":{"early":true,"middle":true,"late":true},'
         '"length_verdict":"appropriate","length_note":"'
