@@ -52,7 +52,7 @@ Notes on `run`:
 - `--min-p` defaults to 0 and is always sent. Without it, `llama-server` applies its own default of 0.05, which most publisher settings do not use.
 - The request sets `repeat_last_n` to `--n-ctx`, so `llama-server` applies the presence penalty to the prompt as well as the output. An application sampler that penalizes only generated tokens behaves differently.
 - The third message always ends with `/no_think`. For model families with a template thinking switch, also pass it, for example `--chat-template-kwargs '{"enable_thinking": false}'`. `reasoning_chars != 0` is scored as structurally bad unless `score --allow-reasoning` is used.
-- `run` also writes `<label>.manifest.json`; see [Reuse a stored arm](#reuse-a-stored-arm).
+- When every trial finishes without an error, `run` also writes `<label>.manifest.json`; see [Reuse a stored arm](#reuse-a-stored-arm).
 
 Score and judge those records:
 
@@ -138,7 +138,7 @@ Record load average, memory pressure, and swap before each arm. If the host is c
 
 ## Reuse a stored arm
 
-Re-running the same incumbent for every candidate is slow. `run` writes `<label>.manifest.json` with a `reuse_key` and its SHA-256. The key covers the host, the `llama-server` version and the hashes of the binary and the shared libraries beside it, the `evaluate.py` hash, the model hash, the prompt, grammar, context, and transcript hashes, the template kwargs, sampling, `--n-ctx`, `--max-tokens`, `--batch`, `--gpu-layers`, `--swa-full`, the starting seed, and the trial count. Hashing the model reads the whole file once.
+Re-running the same incumbent for every candidate is slow. After all trials finish without an error, `run` writes `<label>.manifest.json` with a `reuse_key` and its SHA-256; a failed or interrupted run leaves no manifest. The key covers the host, the `llama-server` version and the hashes of the binary and the shared libraries beside it (after resolving a symlinked `--server`), the `evaluate.py` hash, the model hash, the prompt, grammar, and transcript hashes, a hash of the exact messages sent (so it follows the context file, or `--duration`, `--app-user`, and `--language` when there is none), the template kwargs, sampling, `--n-ctx`, `--max-tokens`, `--batch`, `--gpu-layers`, `--require-metal`, `--swa-full`, the starting seed, and the trial count. Hashing the model reads the whole file once.
 
 To check whether a stored arm can stand in, run the same `run` command with `--key-only`, which prints the manifest without starting the server, and compare `reuse_key_sha256` with the stored manifest's. Reuse the stored `*.runs.jsonl` only when they are equal. Any difference, including an edited prompt or a newer `evaluate.py`, means running it again. Always re-run `score` and `judge`, and never use a reused arm's timings as speed evidence.
 

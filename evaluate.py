@@ -181,12 +181,13 @@ def reuse_key(
     args: argparse.Namespace,
     prompt: str,
     grammar: str | None,
-    context: str | None,
+    messages: list[dict[str, str]],
     transcript: str,
     kwargs: dict,
 ) -> dict:
     """Everything that must match before stored run records may stand in for a new run."""
-    server = pathlib.Path(args.server)
+    # Resolve symlinks: the loader finds shared libraries beside the real binary.
+    server = pathlib.Path(args.server).resolve()
     libraries = sorted(server.parent.glob("lib*.dylib")) + sorted(server.parent.glob("lib*.so*"))
     return {
         "host": _host(),
@@ -198,7 +199,8 @@ def reuse_key(
         "intent": args.intent,
         "prompt_sha256": _sha256_text(prompt),
         "grammar_sha256": _sha256_text(grammar) if grammar is not None else None,
-        "context_sha256": _sha256_text(context) if context is not None else None,
+        # The rendered messages cover --context, or --duration/--app-user/--language without it.
+        "messages_sha256": _sha256_text(json.dumps(messages, ensure_ascii=False)),
         "transcript_sha256": _sha256_text(transcript),
         "chat_template_kwargs": json.dumps(kwargs, sort_keys=True),
         "temperature": args.temperature,
@@ -210,6 +212,7 @@ def reuse_key(
         "max_tokens": args.max_tokens,
         "batch": args.batch,
         "gpu_layers": args.gpu_layers,
+        "require_metal": args.require_metal,
         "swa_full": args.swa_full,
         "seed": args.seed,
         "trials": args.trials,
@@ -255,7 +258,7 @@ def command_run(args: argparse.Namespace) -> int:
     if not isinstance(kwargs, dict):
         raise ValueError("--chat-template-kwargs must decode to an object")
 
-    key = reuse_key(args, prompt, grammar, context, transcript, kwargs)
+    key = reuse_key(args, prompt, grammar, messages, transcript, kwargs)
     manifest = {
         "label": label,
         "reuse_key": key,
@@ -271,7 +274,6 @@ def command_run(args: argparse.Namespace) -> int:
     results_path = out / f"{label}.runs.jsonl"
     if results_path.exists():
         raise FileExistsError(f"refusing to append to existing {results_path}")
-    (out / f"{label}.manifest.json").write_text(rendered_manifest, encoding="utf-8")
     log_path = out / f"{label}.server.log"
     port = _free_port()
     command = [
@@ -383,6 +385,9 @@ def command_run(args: argparse.Namespace) -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
+    # Only a complete, error-free run gets a reuse key; a killed or failed run leaves none.
+    if not failed:
+        (out / f"{label}.manifest.json").write_text(rendered_manifest, encoding="utf-8")
     return 1 if failed else 0
 
 
@@ -1204,37 +1209,87 @@ def command_self_test(args: argparse.Namespace) -> int:
     assert _version_lines("load noise (123 MiB free)\nversion: 1 (abc)\nbuilt with clang") == (
         "version: 1 (abc)\nbuilt with clang"
     )
+    fake_server = f"""#!{sys.executable}
+import http.server, json, sys
+if "--version" in sys.argv:
+    sys.exit(print("load noise (5 MiB free)\\nversion: 1 (abc)"))
+if "--list-devices" in sys.argv:
+    sys.exit(print("  MTL0: Apple M0 (5 MiB, 5 MiB free)"))
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        finish = None if body["max_tokens"] == 3 else "stop"
+        reply = {{"choices": [{{"finish_reason": finish, "message": {{"content": "ok"}}}}]}}
+        data = json.dumps(reply).encode()
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+    def log_message(self, *args):
+        pass
+port = int(sys.argv[sys.argv.index("--port") + 1])
+http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+"""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = pathlib.Path(temp_dir)
-        server = temp_path / "llama-server"
-        server.write_text("#!/bin/sh\necho 'MTL0 (5 MiB free)'\necho 'version: 1 (abc)'\n")
+        real_bin = temp_path / "build/bin"
+        real_bin.mkdir(parents=True)
+        server = real_bin / "llama-server"
+        server.write_text(fake_server, encoding="utf-8")
         server.chmod(0o755)
-        (temp_path / "libllama.dylib").write_bytes(b"lib")
+        (real_bin / "libllama.dylib").write_bytes(b"lib")
+        (temp_path / "link").mkdir()
+        (temp_path / "link/llama-server").symlink_to(server)
         model = temp_path / "model.gguf"
         model.write_bytes(b"gguf")
-        for name, text in (("prompt.txt", "prompt"), ("transcript.txt", "transcript")):
+        for name, text in (
+            ("prompt.txt", "prompt"), ("transcript.txt", "transcript"), ("empty.txt", ""),
+        ):
             (temp_path / name).write_text(text, encoding="utf-8")
-        run_args = build_parser().parse_args(
-            [
-                "run", "--prompt-file", str(temp_path / "prompt.txt"), "--server", str(server),
+
+        def run_argv(*extra: str, server_path: pathlib.Path = server, out: str = "out") -> list[str]:
+            return [
+                "run", "--prompt-file", str(temp_path / "prompt.txt"), "--server", str(server_path),
                 "--model", str(model), "--label", "incumbent",
-                "--transcript", str(temp_path / "transcript.txt"), "--out", str(temp_path / "out"),
+                "--transcript", str(temp_path / "transcript.txt"), "--out", str(temp_path / out),
                 "--duration", "9 minutes", "--app-user", "Ann", "--language", "English",
                 "--n-ctx", "4096", "--max-tokens", "512", "--batch", "512", "--swa-full", "off",
                 "--temperature", "0.7", "--top-p", "0.8", "--top-k", "20",
-                "--presence-penalty", "1.5", "--key-only",
+                "--presence-penalty", "1.5", "--trials", "2", *extra,
             ]
-        )
-        first = reuse_key(run_args, "prompt", None, None, "transcript", {})
-        assert first == reuse_key(run_args, "prompt", None, None, "transcript", {})
-        assert first["server_version"] == "version: 1 (abc)" and first["min_p"] == 0.0
-        assert list(first["server_libraries_sha256"]) == ["libllama.dylib"]
-        assert first != reuse_key(run_args, "prompt", None, None, "transcript", {"enable_thinking": False})
-        printed = io.StringIO()
-        with contextlib.redirect_stdout(printed):
-            assert command_run(run_args) == 0
-        assert json.loads(printed.getvalue())["reuse_key"]["model_sha256"] == _sha256_text("gguf")
+
+        def key_of(argv: list[str]) -> dict:
+            printed = io.StringIO()
+            with contextlib.redirect_stdout(printed):
+                assert command_run(build_parser().parse_args([*argv, "--key-only"])) == 0
+            return json.loads(printed.getvalue())
+
+        first = key_of(run_argv())
+        assert first == key_of(run_argv())
+        key = first["reuse_key"]
+        assert key["server_version"] == "version: 1 (abc)" and key["min_p"] == 0.0
+        assert key["model_sha256"] == _sha256_text("gguf") and key["require_metal"] is True
+        assert list(key["server_libraries_sha256"]) == ["libllama.dylib"]
         assert not (temp_path / "out").exists()
+        assert first != key_of(run_argv("--chat-template-kwargs", '{"enable_thinking": false}'))
+        assert first != key_of(run_argv("--no-require-metal"))
+        german_argv = run_argv()
+        german_argv[german_argv.index("English")] = "German"
+        assert first != key_of(german_argv)
+        assert first == key_of(run_argv("--context", str(temp_path / "empty.txt")))
+        assert first == key_of(run_argv(server_path=temp_path / "link/llama-server"))
+        (real_bin / "libllama.dylib").write_bytes(b"changed")
+        changed = key_of(run_argv(server_path=temp_path / "link/llama-server"))
+        assert changed != first and changed == key_of(run_argv())
+        assert command_run(build_parser().parse_args(run_argv())) == 0
+        assert len((temp_path / "out/incumbent.runs.jsonl").read_text().splitlines()) == 2
+        manifest = json.loads((temp_path / "out/incumbent.manifest.json").read_text())
+        assert manifest == changed
+        failing = run_argv(out="failed")
+        failing[failing.index("512")] = "3"
+        assert command_run(build_parser().parse_args(failing)) == 1
+        assert (temp_path / "failed/incumbent.runs.jsonl").exists()
+        assert not (temp_path / "failed/incumbent.manifest.json").exists()
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = pathlib.Path(temp_dir)
         (temp_path / "transcript.txt").write_text("transcript", encoding="utf-8")
