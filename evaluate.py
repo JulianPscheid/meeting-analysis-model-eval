@@ -679,8 +679,9 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"\w+", _fold(text))
 
 
-def _unfence(content: str) -> tuple[str, bool]:
-    match = re.fullmatch(r"\s*```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```\s*", content)
+def _unfence(content: str, any_language: bool = False) -> tuple[str, bool]:
+    language = r"[^`\r\n]*" if any_language else r"(?:json)?[ \t]*"
+    match = re.fullmatch(r"\s*```" + language + r"\r?\n([\s\S]*?)\r?\n```\s*", content)
     return (match.group(1), True) if match else (content, False)
 
 
@@ -936,19 +937,21 @@ def _speaker_scores(content: str, messages: list[dict], schema: dict) -> dict:
     mappings = _at(value, config["mappings"], [])
     mappings = mappings if isinstance(mappings, list) else []
     evidence = "\n".join(message["content"] for message in messages)
-    folded = _fold(evidence)
+    folded = " ".join(_fold(evidence).split())
     try:
-        pattern = re.compile(config.get("input_labels_pattern", r"\bSpeaker \d+\b"))
+        pattern = re.compile(config.get("input_labels_pattern", r"\bSpeaker \d+\b"), re.I)
     except (re.error, TypeError) as error:
         raise ValueError(f"invalid speakers input_labels_pattern: {error}") from error
-    known = {match.group(0) for match in pattern.finditer(evidence)}
+    known = {match.group(0).casefold() for match in pattern.finditer(evidence)}
     unsupported, unknown = [], []
     for mapping in mappings:
         name = _at(mapping, config["name"])
         label = _at(mapping, config["label"])
-        if isinstance(name, str) and name and not re.search(r"(?<!\w)" + re.escape(_fold(name)) + r"(?!\w)", folded):
-            unsupported.append(name)
-        if isinstance(label, str) and label not in known:
+        if isinstance(name, str) and name:
+            folded_name = " ".join(_fold(name).split())
+            if not re.search(r"(?<!\w)" + re.escape(folded_name) + r"(?!\w)", folded):
+                unsupported.append(name)
+        if isinstance(label, str) and label.casefold() not in known:
             unknown.append(label)
     return {"unsupported_names": sorted(set(unsupported)), "unknown_labels": sorted(set(unknown))}
 
@@ -997,7 +1000,7 @@ def _visible_text(content: str, kind: str) -> str:
             return " ".join(ET.fromstring(content).itertext())
         except ET.ParseError:
             return content
-    return content
+    return _unfence(content, any_language=True)[0]
 
 
 def check_output(intent: str, content: str, *, schema: dict | None = None,
@@ -1016,7 +1019,7 @@ def check_output(intent: str, content: str, *, schema: dict | None = None,
     checker = _check_text if flat else spec["checker"]
     if kind == "json" and schema is None and not spec.get("legacy"):
         raise ValueError(f"--schema-file is required for {intent}")
-    if schema is not None and kind == "json":
+    if schema is not None and kind != "xml":
         _check_schema(schema)
     scores = checker(content=content, schema=schema, transcript=transcript, prompt=prompt,
                      translated=translated, plain=kind == "plain" or config.get("plain", False))
@@ -1026,30 +1029,54 @@ def check_output(intent: str, content: str, *, schema: dict | None = None,
         scores["structurally_bad"] |= any(bool(job_scores.get(key)) for key in
             ("missing_ids", "extra_ids", "duplicate_ids", "unsupported_names", "unknown_labels"))
     text = _visible_text(content, kind)
+    if kind in {"plain", "markdown"}:
+        _, fenced = _unfence(content, any_language=True)
+        errors = schema_errors(text, schema) if schema is not None else []
+        scores.update(code_fence=fenced, schema_errors=errors)
+        scores["structurally_bad"] |= bool(fenced or errors)
+    words = len(_tokens(text))
+    scores["empty_visible_text"] = words == 0
+    scores["structurally_bad"] |= scores["empty_visible_text"]
     detected, confidence = detect_language(text)
-    scores.update(output_kind=kind, words=len(_tokens(text)), detected_language=detected,
+    scores.update(output_kind=kind, words=words, detected_language=detected,
                   language_confidence=confidence,
                   wrong_language=bool(expect_language and detected and detected != expect_language),
                   expected_language=expect_language,
-                  reasoning_leak=bool(re.search(r"</?think(?:ing)?>|<\|(?:analysis|channel)[^>]*>|^\s*(?:analysis|reasoning)\s*:", content, re.I | re.M)))
+                  reasoning_leak=bool(re.search(r"</?think(?:ing)?>|<\|(?:analysis|channel)[^>]*>", content, re.I)))
     scores.setdefault("prompt_leaks", _prompt_leaks(content, prompt, transcript))
     scores.setdefault("untranslated_headings", None)
-    if intent == "feedback_evaluation" and scores.get("json_valid"):
+    if intent == "feedback_evaluation":
         def enum_paths(node: dict, prefix: str = "") -> list[str]:
             paths = [prefix] if "enum" in node else []
             for key, child in node.get("properties", {}).items():
                 paths.extend(enum_paths(child, prefix + "/" + key.replace("~", "~0").replace("/", "~1")))
+            if "items" in node:
+                paths.extend(enum_paths(node["items"], prefix))
             return paths
+
+        def verdict_values(value: object, parts: list[str]) -> list[object]:
+            if not parts:
+                return [value]
+            if isinstance(value, list):
+                return [item for child in value for item in verdict_values(child, parts)]
+            child = value.get(parts[0]) if isinstance(value, dict) else None
+            return verdict_values(child, parts[1:])
+
         paths = enum_paths(schema or {})
         named = [path for path in paths if path.endswith("/verdict")]
         verdict_path = config.get("verdict")
         if verdict_path is None:
             verdict_path = named[0] if len(named) == 1 else paths[0] if len(paths) == 1 else None
         if verdict_path is not None and verdict_path not in paths:
-            raise ValueError("x-eval.verdict must point to an enum field declared in the schema")
-        if verdict_path is not None:
+            scores["verdict_error"] = (f"x-eval.verdict {verdict_path!r} must point to an enum field "
+                                       "declared in the schema")
+            scores["structurally_bad"] = True
+        elif verdict_path is not None and scores.get("json_valid"):
             value = _json_load(_unfence(content)[0])
-            scores["verdict"] = _at(value, verdict_path)
+            parts = [part.replace("~1", "/").replace("~0", "~") for part in verdict_path.split("/")[1:]]
+            scores["verdicts"] = verdict_values(value, parts)
+            if len(scores["verdicts"]) == 1:
+                scores["verdict"] = scores["verdicts"][0]
     return scores
 
 
@@ -1122,10 +1149,11 @@ def _summarize_scores(selected: list[dict]) -> dict:
                   and isinstance(row["timings"].get(field), (int, float))]
         summary[f"median_{field}"] = statistics.median(speeds) if speeds else None
         summary[f"min_{field}"] = min(speeds) if speeds else None
-    if any("verdict" in row for row in selected):
+    if any("verdicts" in row or "verdict" in row for row in selected):
         summary["verdict_distribution"] = dict(collections.Counter(
-            json.dumps(row["verdict"], ensure_ascii=False) if not isinstance(row["verdict"], str) else row["verdict"]
-            for row in selected if "verdict" in row))
+            json.dumps(verdict, ensure_ascii=False) if not isinstance(verdict, str) else verdict
+            for row in selected if "verdicts" in row or "verdict" in row
+            for verdict in row.get("verdicts", [row.get("verdict")])))
     return summary
 
 

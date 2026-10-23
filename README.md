@@ -148,24 +148,29 @@ all supplied records to have that intent; otherwise the record supplies it.
 | Intent | Output | Mechanical checks |
 | --- | --- | --- |
 | summary | JSON | Existing ordered title/recap/todo envelope, Markdown and prompt checks; optional schema |
-| notes | Markdown | Existing title, required H2 sections, duplicate sections and repeated spans |
-| speaker_identification | JSON | Schema; assigned names occur in messages after case/accent folding; mapped labels occur in input |
-| chat | Markdown or text | Common checks only; supports earlier chat turns and multiple meetings |
+| notes | Markdown | Existing title, required H2 sections, duplicate sections and repeated spans; optional string schema |
+| speaker_identification | JSON | Schema; assigned names occur in messages after case/accent folding and whitespace collapsing; mapped labels occur in input regardless of case |
+| chat | Markdown or text | Common checks and optional string schema; supports earlier chat turns and multiple meetings |
 | feedback_analysis | JSON | Schema |
 | feedback_evaluation | JSON | Schema; verdict distribution per model arm, intent and case |
-| transcript_summary | Plain prose | Non-empty; no Markdown headings or list lines |
+| transcript_summary | Plain prose | Non-empty; no Markdown headings or list lines; optional string schema |
 | highlight_analysis | XML | Well-formed XML, required root/direct children, unknown elements |
 | topic_overview | JSON | Schema |
-| transcript_cleanup | JSON or flat text | Schema in structured mode; turn id coverage, duplicates and fidelity proxies; flat mode fidelity proxies |
+| transcript_cleanup | JSON or flat text | Schema; turn id coverage, duplicates and fidelity proxies; flat mode string schema and fidelity proxies |
 
 Every output reports `reasoning_chars`, `reasoning_leak`, `prompt_leaks`, `words`,
-`truncated`, `detected_language`, `language_confidence` and `wrong_language`.
+`empty_visible_text`, `truncated`, `detected_language`, `language_confidence` and `wrong_language`.
 `words` counts Unicode word tokens in visible text (JSON string values or XML
-text, excluding field names/tags). Empty text, incomplete/non-stop responses,
-invalid structure and reasoning leakage make a run structurally bad.
+text, excluding field names, tags and XML attributes). Zero words sets
+`empty_visible_text: true` and makes every intent structurally bad, including
+whitespace, zero-width characters and punctuation-only output such as `...`.
+Incomplete/non-stop responses, invalid structure and reasoning leakage also make
+a run structurally bad.
 `finish == "length"` is always a failure. `--allow-reasoning` permits recorded
 reasoning and explicit reasoning markers in content. It does not permit malformed
-JSON or XML. These checks do not recognize every kind of drafting prose.
+JSON or XML. Reasoning detection uses recorded reasoning and explicit markers
+such as `<think>` and channel tokens. Ordinary prose lines beginning `Analysis:`
+or `reasoning:` are allowed. These checks do not recognize every kind of drafting prose.
 
 For request files, prompt leak checks compare system-message wording against
 non-system messages as evidence. Put instructions in system messages when you
@@ -186,6 +191,13 @@ characters. `json_valid`, `schema_errors` and `structurally_bad` are reported.
 One surrounding JSON code fence is stripped for parsing and reported as
 `code_fence: true`; it remains structurally bad.
 
+For Markdown and plain-text kinds, including notes and flat cleanup, a supplied
+schema validates the visible text as a string. For example, `type: string`,
+`minLength` and `maxLength` apply to that text, and failures appear in
+`schema_errors` and make the output structurally bad. A surrounding triple-backtick
+code fence, with or without a language label, is removed before measuring visible
+text and validating the string; it sets `code_fence: true` and remains structurally bad.
+
 An XML schema lists a `root`, required direct `children` and optional
 `allowed_elements`. Without allowed_elements, only the root and required children
 are allowed anywhere in the tree. The scorer reports `xml_valid`, `root_matches`,
@@ -196,7 +208,10 @@ This small contract does not validate attributes, ordering or element counts.
 
 - Speaker mappings: `speakers` names `mappings` (array pointer), `label` and `name`
   (pointers relative to each mapping), plus an optional `input_labels_pattern`
-  regular expression. The default pattern recognizes `Speaker` plus a space and
+  regular expression. Names are matched after case/accent folding and collapsing
+  whitespace runs on both sides, so `Mina  Vale` matches `Mina Vale`. Label
+  discovery and comparison are case-insensitive, so `speaker 1` matches
+  `Speaker 1`. The default pattern recognizes `Speaker` plus a space and
   digits. `unsupported_names` and
   `unknown_labels` make the output structurally bad. Null names are allowed when
   the schema permits them. Name occurrence is evidence of presence, not proof of
@@ -214,9 +229,15 @@ This small contract does not validate attributes, ordering or element counts.
   `cleanup.input_text` to a pointer locating the raw text string. See
   `fixtures/transcript_cleanup/request.flat.example.json` and schema.flat.json.
 - Verdicts: feedback evaluation finds a property named `verdict` with an enum, or
-  the only enum field. Set `verdict` to an output pointer in x-eval when several
-  enum fields are ambiguous. The pointer must locate an enum declared by the
-  schema. `verdict_distribution` counts returned values, including invalid ones;
+  the only enum field, searching both `properties` and array `items`. Set
+  `verdict` to an output pointer in x-eval when several enum fields are ambiguous.
+  Arrays are traversed for every element: `/rows/verdict` selects each row's
+  verdict, including through nested arrays. The pointer must locate an enum
+  declared by the schema. A misconfigured pointer is reported per scored row as
+  `verdict_error` and makes that row structurally bad; scoring continues and
+  writes all rows. `verdicts` lists the selected values; `verdict` is retained
+  when exactly one value is selected. `verdict_distribution` counts every
+  selected value across every array element and trial, including invalid values;
   inspect schema_errors when interpreting the distribution.
 
 Cleanup overlap is multiset token intersection divided by source token count,
