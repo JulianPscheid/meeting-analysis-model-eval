@@ -1,0 +1,10 @@
+root ::= ws value
+value-insights-item ::= nonempty
+value-insights ::= "[" ws value-insights-item ("," ws value-insights-item)* "]" ws
+value-preparation ::= nonempty
+value ::= "{" ws "\"insights\"" ws ":" ws value-insights "," ws "\"preparation\"" ws ":" ws value-preparation "}" ws
+string ::= "\"" char* "\"" ws
+nonempty ::= "\"" char+ "\"" ws
+char ::= [^"\\\x00-\x1F\x7F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\r\n]*

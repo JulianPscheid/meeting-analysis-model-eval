@@ -1,0 +1,8 @@
+{
+  "speakers": [
+    {
+      "label": "Speaker 9",
+      "name": "Zeno Arvik"
+    }
+  ]
+}

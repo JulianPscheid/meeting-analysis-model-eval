@@ -1,0 +1,16 @@
+{
+  "label": "feedback_analysis-example",
+  "maxTokens": 1024,
+  "grammar": "root ::= ws value\nvalue-suggestion ::= nonempty\nvalue-reason ::= nonempty\nvalue ::= \"{\" ws \"\\\"suggestion\\\"\" ws \":\" ws value-suggestion \",\" ws \"\\\"reason\\\"\" ws \":\" ws value-reason \"}\" ws\nstring ::= \"\\\"\" char* \"\\\"\" ws\nnonempty ::= \"\\\"\" char+ \"\\\"\" ws\nchar ::= [^\"\\\\\\x00-\\x1F\\x7F] | \"\\\\\" ([\"\\\\/bfnrt] | \"u\" hex hex hex hex)\nhex ::= [0-9a-fA-F]\nws ::= [ \\t\\r\\n]*\n",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Lies das aktuelle Gesprächsfenster und schlage eine kurze, jetzt hilfreiche Frage vor. Antworte auf Deutsch als JSON mit den Zeichenketten suggestion und reason. Erfinde keine Beschlüsse."
+    },
+    {
+      "role": "user",
+      "content": "Firnloop Labs, aktuelles Gespräch. Mina Vale: Der Batterietest für unseren Sensor ist noch offen. Oren Talo: Ich kann den Test übernehmen. Mina Vale: Gut, dann können wir danach über den Start entscheiden. Einen Termin für den Test haben wir noch nicht genannt."
+    }
+  ],
+  "stream": true
+}

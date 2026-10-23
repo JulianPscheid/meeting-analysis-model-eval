@@ -1,0 +1,9 @@
+root ::= ws value
+value-verdict ::= ("\"show\"" | "\"hide\"") ws
+value-reason ::= nonempty
+value ::= "{" ws "\"verdict\"" ws ":" ws value-verdict "," ws "\"reason\"" ws ":" ws value-reason "}" ws
+string ::= "\"" char* "\"" ws
+nonempty ::= "\"" char+ "\"" ws
+char ::= [^"\\\x00-\x1F\x7F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\r\n]*

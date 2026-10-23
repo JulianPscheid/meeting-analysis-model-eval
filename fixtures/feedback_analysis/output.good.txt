@@ -1,0 +1,4 @@
+{
+  "suggestion": "Bis wann kann Oren den Batterietest durchführen?",
+  "reason": "Die Aufgabe ist übernommen, aber ein Termin für den Test wurde noch nicht vereinbart. Der Test ist für die Entscheidung über den Start erforderlich."
+}

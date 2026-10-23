@@ -1,0 +1,16 @@
+{
+  "label": "highlight_analysis-example",
+  "maxTokens": 1024,
+  "grammar": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "Explain the highlighted moment using its meeting context. Reply in English as XML: a highlight root containing meaning, evidence and follow_up, with text only inside each child."
+    },
+    {
+      "role": "user",
+      "content": "Firnloop Labs planning call. Speaker 1: I am Mina Vale. The harbor sensor trial needs one more battery test. Speaker 2: I am Oren Talo. I will test the battery on Thursday. Speaker 1: We will decide whether to begin the trial after the test; we have not approved a start date.\nHighlighted moment: We have not approved a start date."
+    }
+  ],
+  "stream": true
+}

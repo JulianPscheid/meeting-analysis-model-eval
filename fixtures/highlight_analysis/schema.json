@@ -1,0 +1,14 @@
+{
+  "root": "highlight",
+  "children": [
+    "meaning",
+    "evidence",
+    "follow_up"
+  ],
+  "allowed_elements": [
+    "highlight",
+    "meaning",
+    "evidence",
+    "follow_up"
+  ]
+}

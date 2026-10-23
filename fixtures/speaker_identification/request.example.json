@@ -1,0 +1,16 @@
+{
+  "label": "speaker_identification-example",
+  "maxTokens": 1024,
+  "grammar": "root ::= ws value\nvalue-speakers-item-label ::= nonempty\nvalue-speakers-item-name-0 ::= nonempty\nvalue-speakers-item-name-1 ::= \"null\" ws\nvalue-speakers-item-name ::= value-speakers-item-name-0 | value-speakers-item-name-1\nvalue-speakers-item ::= \"{\" ws \"\\\"label\\\"\" ws \":\" ws value-speakers-item-label \",\" ws \"\\\"name\\\"\" ws \":\" ws value-speakers-item-name \"}\" ws\nvalue-speakers ::= \"[\" ws value-speakers-item (\",\" ws value-speakers-item)* \"]\" ws\nvalue ::= \"{\" ws \"\\\"speakers\\\"\" ws \":\" ws value-speakers \"}\" ws\nstring ::= \"\\\"\" char* \"\\\"\" ws\nnonempty ::= \"\\\"\" char+ \"\\\"\" ws\nchar ::= [^\"\\\\\\x00-\\x1F\\x7F] | \"\\\\\" ([\"\\\\/bfnrt] | \"u\" hex hex hex hex)\nhex ::= [0-9a-fA-F]\nws ::= [ \\t\\r\\n]*\n",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Identify names for diarized labels from the supplied meeting. Return {\"speakers\":[{\"label\":\"...\",\"name\":\"...\"}]}. Use null when the identity has no evidence. Return JSON only."
+    },
+    {
+      "role": "user",
+      "content": "Firnloop Labs planning call. Speaker 1: I am Mina Vale. The harbor sensor trial needs one more battery test. Speaker 2: I am Oren Talo. I will test the battery on Thursday. Speaker 1: We will decide whether to begin the trial after the test; we have not approved a start date."
+    }
+  ],
+  "stream": true
+}

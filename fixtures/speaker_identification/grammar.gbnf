@@ -1,0 +1,13 @@
+root ::= ws value
+value-speakers-item-label ::= nonempty
+value-speakers-item-name-0 ::= nonempty
+value-speakers-item-name-1 ::= "null" ws
+value-speakers-item-name ::= value-speakers-item-name-0 | value-speakers-item-name-1
+value-speakers-item ::= "{" ws "\"label\"" ws ":" ws value-speakers-item-label "," ws "\"name\"" ws ":" ws value-speakers-item-name "}" ws
+value-speakers ::= "[" ws value-speakers-item ("," ws value-speakers-item)* "]" ws
+value ::= "{" ws "\"speakers\"" ws ":" ws value-speakers "}" ws
+string ::= "\"" char* "\"" ws
+nonempty ::= "\"" char+ "\"" ws
+char ::= [^"\\\x00-\x1F\x7F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\r\n]*

@@ -1,0 +1,15 @@
+{
+  "label": "cleanup-flat-example",
+  "maxTokens": 512,
+  "grammar": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "Remove ASR fillers and restore punctuation. Preserve meaning, names and negations. Reply with plain text only."
+    },
+    {
+      "role": "user",
+      "content": "um I am Mina Vale and the trial is not approved yet"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "label": "chat-example",
+  "maxTokens": 1024,
+  "grammar": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "Answer questions using the supplied meeting records and earlier conversation. Keep uncertain plans distinct from decisions. Reply in English; short prose or Markdown is fine."
+    },
+    {
+      "role": "user",
+      "content": "Meeting 1, Monday: Mina Vale of Firnloop Labs said the sensor trial needed a battery test. Oren Talo agreed to run it Thursday. No trial start was approved.\nMeeting 2, Thursday: Oren reported that the battery passed. Mina asked for a weather check before choosing a start date."
+    },
+    {
+      "role": "assistant",
+      "content": "The battery test was planned for Thursday and has passed."
+    },
+    {
+      "role": "user",
+      "content": "What is still needed before the trial can start?"
+    }
+  ],
+  "stream": true
+}

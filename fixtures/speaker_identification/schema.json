@@ -1,0 +1,42 @@
+{
+  "type": "object",
+  "required": [
+    "speakers"
+  ],
+  "properties": {
+    "speakers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "label",
+          "name"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "x-eval": {
+    "speakers": {
+      "mappings": "/speakers",
+      "label": "/label",
+      "name": "/name",
+      "input_labels_pattern": "\\bSpeaker \\d+\\b"
+    }
+  }
+}

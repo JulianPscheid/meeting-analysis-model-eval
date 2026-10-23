@@ -1,0 +1,16 @@
+{
+  "label": "feedback_evaluation-example",
+  "maxTokens": 1024,
+  "grammar": "root ::= ws value\nvalue-verdict ::= (\"\\\"show\\\"\" | \"\\\"hide\\\"\") ws\nvalue-reason ::= nonempty\nvalue ::= \"{\" ws \"\\\"verdict\\\"\" ws \":\" ws value-verdict \",\" ws \"\\\"reason\\\"\" ws \":\" ws value-reason \"}\" ws\nstring ::= \"\\\"\" char* \"\\\"\" ws\nnonempty ::= \"\\\"\" char+ \"\\\"\" ws\nchar ::= [^\"\\\\\\x00-\\x1F\\x7F] | \"\\\\\" ([\"\\\\/bfnrt] | \"u\" hex hex hex hex)\nhex ::= [0-9a-fA-F]\nws ::= [ \\t\\r\\n]*\n",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Evaluate whether the proposed live suggestion would help right now. Return JSON with verdict (show or hide) and reason. Ground the decision in the recent transcript; reply in English."
+    },
+    {
+      "role": "user",
+      "content": "Firnloop Labs planning call. Speaker 1: I am Mina Vale. The harbor sensor trial needs one more battery test. Speaker 2: I am Oren Talo. I will test the battery on Thursday. Speaker 1: We will decide whether to begin the trial after the test; we have not approved a start date.\nCandidate suggestion: Ask Oren which day he will test the battery."
+    }
+  ],
+  "stream": true
+}

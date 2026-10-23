@@ -1,0 +1,16 @@
+{
+  "label": "transcript_summary-example",
+  "maxTokens": 1024,
+  "grammar": null,
+  "messages": [
+    {
+      "role": "system",
+      "content": "Résume la réunion jusqu’ici en un court paragraphe en français. Conserve les décisions, les incertitudes et les responsables. Utilise du texte continu, sans titres ni listes."
+    },
+    {
+      "role": "user",
+      "content": "Réunion de Firnloop Labs. Mina Vale : Le capteur a besoin d’un dernier test de batterie. Oren Talo : Je ferai ce test jeudi. Mina Vale : Nous déciderons ensuite du lancement. La date de début n’est pas encore approuvée."
+    }
+  ],
+  "stream": true
+}

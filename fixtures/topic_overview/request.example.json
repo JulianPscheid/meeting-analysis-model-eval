@@ -1,0 +1,16 @@
+{
+  "label": "topic_overview-example",
+  "maxTokens": 1024,
+  "grammar": "root ::= ws value\nvalue-insights-item ::= nonempty\nvalue-insights ::= \"[\" ws value-insights-item (\",\" ws value-insights-item)* \"]\" ws\nvalue-preparation ::= nonempty\nvalue ::= \"{\" ws \"\\\"insights\\\"\" ws \":\" ws value-insights \",\" ws \"\\\"preparation\\\"\" ws \":\" ws value-preparation \"}\" ws\nstring ::= \"\\\"\" char* \"\\\"\" ws\nnonempty ::= \"\\\"\" char+ \"\\\"\" ws\nchar ::= [^\"\\\\\\x00-\\x1F\\x7F] | \"\\\\\" ([\"\\\\/bfnrt] | \"u\" hex hex hex hex)\nhex ::= [0-9a-fA-F]\nws ::= [ \\t\\r\\n]*\n",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Review both meetings about the same topic. Return JSON with insights (an array of strings) and preparation (a string for the next meeting). Preserve the sequence of changes and open decisions; reply in English."
+    },
+    {
+      "role": "user",
+      "content": "Topic: harbor sensor trial at Firnloop Labs.\nMeeting 1, Monday: Mina Vale required a battery test before deciding on the trial. Oren Talo would test Thursday.\nMeeting 2, Thursday: Oren said the battery passed. Mina required a weather check next. A start date remains unapproved."
+    }
+  ],
+  "stream": true
+}

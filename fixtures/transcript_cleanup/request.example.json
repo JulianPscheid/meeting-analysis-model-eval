@@ -1,0 +1,16 @@
+{
+  "label": "transcript_cleanup-example",
+  "maxTokens": 1024,
+  "grammar": "root ::= ws value\nvalue-turns-item-id ::= nonempty\nvalue-turns-item-text ::= nonempty\nvalue-turns-item ::= \"{\" ws \"\\\"id\\\"\" ws \":\" ws value-turns-item-id \",\" ws \"\\\"text\\\"\" ws \":\" ws value-turns-item-text \"}\" ws\nvalue-turns ::= \"[\" ws value-turns-item (\",\" ws value-turns-item)* \"]\" ws\nvalue ::= \"{\" ws \"\\\"turns\\\"\" ws \":\" ws value-turns \"}\" ws\nstring ::= \"\\\"\" char* \"\\\"\" ws\nnonempty ::= \"\\\"\" char+ \"\\\"\" ws\nchar ::= [^\"\\\\\\x00-\\x1F\\x7F] | \"\\\\\" ([\"\\\\/bfnrt] | \"u\" hex hex hex hex)\nhex ::= [0-9a-fA-F]\nws ::= [ \\t\\r\\n]*\n",
+  "messages": [
+    {
+      "role": "system",
+      "content": "Clean obvious ASR punctuation and fillers while preserving every meaning, name, number, negation and turn id. Return JSON with turns, each having id and text. Do not combine turns or summarize."
+    },
+    {
+      "role": "user",
+      "content": "{\"turns\": [{\"id\": \"t1\", \"text\": \"um I am Mina Vale and the trial is not approved yet\"}, {\"id\": \"t2\", \"text\": \"I am Oren Talo uh the battery test is Thursday\"}]}"
+    }
+  ],
+  "stream": true
+}

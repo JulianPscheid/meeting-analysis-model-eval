@@ -1,0 +1,4 @@
+{
+  "verdict": "hide",
+  "reason": "Oren already said he would test the battery on Thursday. The suggested question repeats information that is in the recent transcript."
+}

@@ -1,0 +1,12 @@
+{
+  "speakers": [
+    {
+      "label": "Speaker 1",
+      "name": "Mina Vale"
+    },
+    {
+      "label": "Speaker 2",
+      "name": "Oren Talo"
+    }
+  ]
+}

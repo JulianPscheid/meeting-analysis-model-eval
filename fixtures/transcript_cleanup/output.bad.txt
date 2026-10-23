@@ -1,0 +1,16 @@
+{
+  "turns": [
+    {
+      "id": "t1",
+      "text": "The trial is approved."
+    },
+    {
+      "id": "t1",
+      "text": "The trial is approved."
+    },
+    {
+      "id": "t9",
+      "text": "Launch tomorrow."
+    }
+  ]
+}

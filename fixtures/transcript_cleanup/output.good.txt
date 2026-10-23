@@ -1,0 +1,12 @@
+{
+  "turns": [
+    {
+      "id": "t1",
+      "text": "I am Mina Vale, and the trial is not approved yet."
+    },
+    {
+      "id": "t2",
+      "text": "I am Oren Talo. The battery test is Thursday."
+    }
+  ]
+}

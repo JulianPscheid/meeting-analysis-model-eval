@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": [
+    "verdict",
+    "reason"
+  ],
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "show",
+        "hide"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

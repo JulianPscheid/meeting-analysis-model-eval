@@ -1,0 +1,11 @@
+root ::= ws value
+value-turns-item-id ::= nonempty
+value-turns-item-text ::= nonempty
+value-turns-item ::= "{" ws "\"id\"" ws ":" ws value-turns-item-id "," ws "\"text\"" ws ":" ws value-turns-item-text "}" ws
+value-turns ::= "[" ws value-turns-item ("," ws value-turns-item)* "]" ws
+value ::= "{" ws "\"turns\"" ws ":" ws value-turns "}" ws
+string ::= "\"" char* "\"" ws
+nonempty ::= "\"" char+ "\"" ws
+char ::= [^"\\\x00-\x1F\x7F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\r\n]*
