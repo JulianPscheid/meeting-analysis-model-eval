@@ -1,6 +1,6 @@
 # Meeting analysis model evaluator
 
-This command line harness runs GGUF models through `llama-server` with a three-message meeting transcript request, records JSONL results, mechanically checks recap or notes structure, and can ask the Codex CLI for a blind transcript-grounded review.
+This command line harness runs GGUF models through `llama-server`, records JSONL results, mechanically checks meeting analysis outputs, and can ask the Codex CLI for a blind review grounded in the input. It accepts exact request files for ten jobs and keeps the three-message prompt/transcript path for summary and notes.
 
 ## Requirements
 
@@ -51,7 +51,7 @@ Notes on `run`:
 - `run` refuses to overwrite an existing `<label>.runs.jsonl`.
 - `--min-p` defaults to 0 and is always sent. Without it, `llama-server` applies its own default of 0.05, which most publisher settings do not use.
 - The request sets `repeat_last_n` to `--n-ctx`, so `llama-server` applies the presence penalty to the prompt as well as the output. An application sampler that penalizes only generated tokens behaves differently.
-- The third message always ends with `/no_think`. For model families with a template thinking switch, also pass it, for example `--chat-template-kwargs '{"enable_thinking": false}'`. `reasoning_chars != 0` is scored as structurally bad unless `score --allow-reasoning` is used.
+- In prompt/transcript mode, the third message always ends with `/no_think`. Request-file messages are sent verbatim; the file owns any thinking instructions. For model families with a template thinking switch, also pass it, for example `--chat-template-kwargs '{"enable_thinking": false}'`. `reasoning_chars != 0` is scored as structurally bad unless `score --allow-reasoning` is used.
 - When every trial finishes without an error, `run` also writes `<label>.manifest.json`; see [Reuse a stored arm](#reuse-a-stored-arm).
 
 Score and judge those records:
@@ -92,7 +92,192 @@ Summary output is one JSON object with exactly these keys in this order: `title`
 
 ## Use your own prompt and grammar
 
-Pass your instruction text with `--prompt-file`. Its exact UTF-8 contents become the first user message. For summary runs, pass an optional GBNF file with `--grammar-file`; notes runs do not accept a grammar. The mechanical scorer reads the prompt to detect copied prompt text and required `## ` sections, so `score --prompt-file` must be the prompt matching the records' intent; `score` stops with an error when a record's `prompt_sha256` differs from that file. The judge reads the applicable prompt to apply its duration and detail contract, using `--summary-prompt-file` or `--notes-prompt-file` according to the intents in the run records.
+Pass your instruction text with `--prompt-file`. Its exact UTF-8 contents become the first user message. For summary runs, pass an optional GBNF file with `--grammar-file`; notes runs do not accept a grammar. The mechanical scorer reads the prompt to detect copied prompt text and required `## ` sections, so `score --prompt-file` must be the prompt matching the records' intent; `score` stops with an error when a record's `prompt_sha256` differs from that file. The judge reads the applicable prompt to apply its duration and detail contract, using `--summary-prompt-file` or `--notes-prompt-file` according to the intents in the run records. Keep legacy summary and notes scoring invocations separate when their prompt files differ.
+
+## Exact request files
+
+`run --request-file path.json --intent JOB` replaces the prompt/transcript message
+builder. The file holds one object or a non-empty list of objects:
+
+```json
+{
+  "label": "battery-follow-up",
+  "maxTokens": 1024,
+  "grammar": null,
+  "messages": [
+    {"role": "system", "content": "Answer only from the meeting. Reply in English."},
+    {"role": "user", "content": "Mina said the test passed, but the start date is still open."},
+    {"role": "assistant", "content": "The test passed; no start date was chosen."},
+    {"role": "user", "content": "Was a start date approved?"}
+  ],
+  "stream": false
+}
+```
+
+Case labels must be non-empty and unique within the file. `grammar` contains full
+GBNF text or `null`; the example request files embed the same text as their
+adjacent grammar.gbnf. Messages accept `system`, `user` and `assistant` roles with
+string content. They are sent verbatim, in order, without an added `/no_think`.
+`stream` is optional and ignored: the harness always requests a complete response.
+Add any model-specific thinking instruction to the file, and use
+`--chat-template-kwargs` when required by the model's template.
+
+Each case runs `--trials` times with the same seed sequence. `--label` remains the
+model arm and output filename; each record's `case_label` comes from the request.
+`--max-tokens` overrides every case's maxTokens. `--grammar-file` overrides every
+case's grammar; `--grammar off` disables grammar, including that override.
+`--grammar on` requires GBNF from the file or override. Request-file mode does not
+accept `--prompt-file`, `--transcript`, `--context`, `--duration`, `--app-user` or
+`--language`. The output language belongs in the request messages.
+
+The reuse key covers the request file's exact UTF-8 bytes and every effective
+case's messages, grammar, token budget and label. Even changing ignored `stream`
+or JSON whitespace changes the key. For these records, `prompt_sha256` hashes the
+request file, and `score` and `judge` require the matching `--request-file`; a byte
+mismatch is refused before scoring or external judging. Records also store full
+`request_messages`, so treat results with the same privacy as inputs. Legacy key
+fields retain their meanings; updating evaluate.py changes its own hash and
+therefore invalidates earlier keys as it did before.
+
+## Contracts and checks for every job
+
+`run`, `score` and `judge` recognize the same intent registry. New jobs use
+request-file input. `score --intent JOB` and `judge --intent JOB` optionally require
+all supplied records to have that intent; otherwise the record supplies it.
+
+| Intent | Output | Mechanical checks |
+| --- | --- | --- |
+| summary | JSON | Existing ordered title/recap/todo envelope, Markdown and prompt checks; optional schema |
+| notes | Markdown | Existing title, required H2 sections, duplicate sections and repeated spans |
+| speaker_identification | JSON | Schema; assigned names occur in messages after case/accent folding; mapped labels occur in input |
+| chat | Markdown or text | Common checks only; supports earlier chat turns and multiple meetings |
+| feedback_analysis | JSON | Schema |
+| feedback_evaluation | JSON | Schema; verdict distribution per model arm, intent and case |
+| transcript_summary | Plain prose | Non-empty; no Markdown headings or list lines |
+| highlight_analysis | XML | Well-formed XML, required root/direct children, unknown elements |
+| topic_overview | JSON | Schema |
+| transcript_cleanup | JSON or flat text | Schema in structured mode; turn id coverage, duplicates and fidelity proxies; flat mode fidelity proxies |
+
+Every output reports `reasoning_chars`, `reasoning_leak`, `prompt_leaks`, `words`,
+`truncated`, `detected_language`, `language_confidence` and `wrong_language`.
+`words` counts Unicode word tokens in visible text (JSON string values or XML
+text, excluding field names/tags). Empty text, incomplete/non-stop responses,
+invalid structure and reasoning leakage make a run structurally bad.
+`finish == "length"` is always a failure. `--allow-reasoning` permits recorded
+reasoning and explicit reasoning markers in content. It does not permit malformed
+JSON or XML. These checks do not recognize every kind of drafting prose.
+
+For request files, prompt leak checks compare system-message wording against
+non-system messages as evidence. Put instructions in system messages when you
+want that distinction; instructions and evidence mixed in one user message
+cannot be separated mechanically. As before, `prompt_leaks` is a report for human
+review, not by itself a structural failure.
+
+### Schema files
+
+Pass `score --schema-file fixtures/JOB/schema.json`. A schema is required for new
+JSON jobs and XML, and for cleanup in either mode. The JSON subset supports
+`type` (including a list of types for nullable values), `required`, `properties`,
+`items`, `enum`, `minItems`, `maxItems`, `minLength`, `maxLength` and
+`additionalProperties: false`. Unknown validation keywords are refused rather
+than silently ignored. `title`, `description` and `$schema` are accepted as
+annotations; `$schema` does not enable more keywords. Lengths count Python Unicode
+characters. `json_valid`, `schema_errors` and `structurally_bad` are reported.
+One surrounding JSON code fence is stripped for parsing and reported as
+`code_fence: true`; it remains structurally bad.
+
+An XML schema lists a `root`, required direct `children` and optional
+`allowed_elements`. Without allowed_elements, only the root and required children
+are allowed anywhere in the tree. The scorer reports `xml_valid`, `root_matches`,
+`missing_elements` and `unknown_elements`. DTD/entity declarations are refused.
+This small contract does not validate attributes, ordering or element counts.
+
+`x-eval` holds generic job metadata alongside the JSON schema:
+
+- Speaker mappings: `speakers` names `mappings` (array pointer), `label` and `name`
+  (pointers relative to each mapping), plus an optional `input_labels_pattern`
+  regular expression. The default pattern recognizes `Speaker` plus a space and
+  digits. `unsupported_names` and
+  `unknown_labels` make the output structurally bad. Null names are allowed when
+  the schema permits them. Name occurrence is evidence of presence, not proof of
+  correct attribution.
+- Cleanup: `cleanup` names `input_turns`, `output_turns`, `id` and `text` pointers.
+  `output_id` and `output_text` can override the per-turn output pointers. Input
+  paths start at `{"messages": [...]}`; output paths start at the parsed output.
+  A pointer continuing into a message's content decodes that content as JSON.
+  Paths use JSON Pointer escaping (`~1` for `/`, `~0` for `~`) and array indices.
+  The supplied structured fixture uses `/messages/1/content/turns`, `/turns`,
+  `/id` and `/text`. Input ids must be unique strings or integers. Every source id
+  must occur exactly once; `missing_ids`, `extra_ids` and `duplicate_ids` are
+  structural failures.
+- Flat cleanup: set `mode` to `flat`, `plain` to true, and
+  `cleanup.input_text` to a pointer locating the raw text string. See
+  `fixtures/transcript_cleanup/request.flat.example.json` and schema.flat.json.
+- Verdicts: feedback evaluation finds a property named `verdict` with an enum, or
+  the only enum field. Set `verdict` to an output pointer in x-eval when several
+  enum fields are ambiguous. The pointer must locate an enum declared by the
+  schema. `verdict_distribution` counts returned values, including invalid ones;
+  inspect schema_errors when interpreting the distribution.
+
+Cleanup overlap is multiset token intersection divided by source token count,
+with Unicode case/accent folding and punctuation removed. `min_turn_overlap` is
+the minimum source-token retention across matched turns; a missing turn scores
+zero. `overall_overlap` compares all source and output text; `length_ratio` is
+output tokens divided by source tokens. Flat mode reports only the latter two.
+These are report-only proxies: deleting a filler lowers overlap, while changing
+one negation can preserve a high score. Read the text or use the judge for meaning.
+No semantic quality pass is implied by a clean schema.
+
+### Output language
+
+Use `score --expect-language en|de|fr|es|it|pt|nl`. A small stopword-frequency
+detector compares the seven languages; it abstains with detected_language null
+when fewer than three profile words occur or the leading profiles tie.
+`language_confidence` is the winning count's margin over the runner-up, divided
+by the winning count, not a calibrated probability. Short names, ids and mixed
+languages are often inconclusive. A different detected language sets
+`wrong_language`; `--strict-language` makes that a structural failure. Strict mode
+requires --expect-language; abstention still needs human review. Keep using
+`--translated-headings` for the existing summary/notes copied-heading check.
+
+### Evaluating every on-device job
+
+Run a fixture as one arm, then repeat with each comparison model and a different
+--label. The JSON fixtures already include a grammar; no --grammar-file is needed.
+
+```sh
+python3 evaluate.py run --request-file fixtures/topic_overview/request.example.json \
+  --intent topic_overview --server /path/to/llama-server --model /path/to/model.gguf \
+  --label candidate --out results/topic --n-ctx 32768 --batch 512 --swa-full off \
+  --temperature 0.7 --top-p 0.8 --top-k 20 --min-p 0 --presence-penalty 1.5
+
+python3 evaluate.py score --request-file fixtures/topic_overview/request.example.json \
+  --schema-file fixtures/topic_overview/schema.json --expect-language en \
+  --out results/topic/mechanical.json results/topic/candidate.runs.jsonl
+
+python3 evaluate.py judge --request-file fixtures/topic_overview/request.example.json \
+  --schema-file fixtures/topic_overview/schema.json --expect-language en \
+  --out results/topic/judge.json results/topic/candidate.runs.jsonl
+```
+
+Repeat for the other seven new intent folders, using each folder's schema and
+request. feedback_analysis requests German (`--expect-language de`);
+transcript_summary requests French (`--expect-language fr`). Test both cleanup
+modes. Continue evaluating summary and notes with the existing commands, or
+provide their exact requests too. Each new folder includes output.good.txt and
+output.bad.txt as hand-written checker examples, not model results. See
+[fixtures/long/README.md](fixtures/long/README.md) for 20–30K input-token cases and
+output budgets up to 8192 tokens.
+
+For request-file or mixed-intent results, score and judge `summary` is grouped as
+intent → case label → model arm, so unrelated cases are not pooled. Single-intent
+legacy records keep the existing per-arm summary shape. `grouped_summary` always
+provides the grouped shape. The judge uses a job-specific accuracy, compliance,
+completeness and language rubric and receives full request messages plus the
+optional schema. Legacy summary/notes judgments retain their existing fields;
+new jobs add contract_errors, completeness_note, language_note and
+language_matches_request. A malformed judgment is an error, and a missing judgment
+keeps aggregate findings null.
 
 ## Context and response language
 
@@ -116,7 +301,7 @@ A structurally clean run passed a narrow envelope and Markdown check. It is not 
 - `prompt_leaks` lists output spans that share an eight-word run with the prompt but not with the transcript. It covers the summary title and recap body as well as notes, because models copy example sentences into prose that a reader sees, not only into todos. Todos copied whole from the prompt show `text_verbatim_in_prompt`. Also grep the output for your prompt's example names and numbers, which can leak in fragments shorter than eight words.
 - Summary rows report `sections`, `missing_sections`, and `title_words`. These are not part of `structurally_bad` for summaries, so an output with only one of the required sections still counts as clean; check them.
 - The judge summary leads with typed fields: `structural_leaks` by kind, and todos not assigned to the app user, unsupported, or with a date not stated in the transcript. These are categorical and hold up across judge runs. `unsupported_claims` counts moved from 10 to 13 and from 19 to 11 between runs on identical six-trial inputs, so a difference smaller than that is not a finding. In one comparison the claim counts were 55 and 41, within that noise, while structural leaks were 16 and 0 and every one of nine todos was unsupported; the typed fields decided it.
-- The judge is not a language check. It has reported zero structural leaks for outputs with English headings inside German text, and it sometimes lists other participants' action items as todos in notes, which have no todo field. A judge parse failure is a missing judgment, not zero findings, and the per-label totals are `null` when any trial failed.
+- The legacy summary/notes judge is not a reliable language check. It has reported zero structural leaks for outputs with English headings inside German text, and it sometimes lists other participants' action items as todos in notes, which have no todo field. A judge parse failure is a missing judgment, not zero findings, and the per-label totals are `null` when any trial failed.
 - A run with `reasoning_chars == 0` can still put drafting or self-correction ("I will stick to the transcript spelling...") into the answer. Read the outputs.
 
 ## Thinking models
@@ -128,7 +313,7 @@ A structurally clean run passed a narrow envelope and Markdown check. It is not 
 
 ## Size the context and the benchmark
 
-Size `--n-ctx` from each model's own token count for the full three-message request plus `--max-tokens` and a margin. `llama-server`'s `/apply-template` and `/tokenize` endpoints give that count before a run; the rendered template also shows whether the thinking switch took effect (for example, an empty closed think block at the end). After a run, `usage.prompt_tokens` in the records is the same number. Use it for `PROMPT_TOKENS` in `bench.sh speed`.
+Size `--n-ctx` from each model's own token count for the full request messages plus the output token budget and a margin. `llama-server`'s `/apply-template` and `/tokenize` endpoints give that count before a run; the rendered template also shows whether the thinking switch took effect (for example, an empty closed think block at the end). After a run, `usage.prompt_tokens` in the records is the same number. Use it for `PROMPT_TOKENS` in `bench.sh speed`.
 
 To inspect a GGUF's architecture, embedded chat template, and control tokens, use `gguf-dump --no-tensors model.gguf` from llama.cpp's `gguf-py` package.
 
@@ -148,7 +333,7 @@ To check whether a stored arm can stand in, run the same `run` command with `--k
 
 ## Get a transcript
 
-No transcript is included. Any public meeting recording works. For a video with automatic captions, download subtitles without downloading the media, then convert them:
+The request fixtures contain short invented meetings. For a longer transcript, any public meeting recording works. For a video with automatic captions, download subtitles without downloading the media, then convert them:
 
 ```sh
 yt-dlp --write-auto-sub --sub-langs en --sub-format vtt --skip-download VIDEO_URL
@@ -160,5 +345,7 @@ python3 evaluate.py captions VIDEO_FILE.en.vtt --out transcript.txt
 ## Privacy
 
 `judge` sends the prompt file contents (`production_prompt`), the `--context` file contents when a run stored `app_supplied_context`, the transcript, and the model output to the Codex CLI, an external provider. Use it only with content you are permitted to share.
+
+With `--request-file`, judge instead sends the full request messages, model output, optional schema and expected language to the external provider. The fixtures use invented names and meetings; replace them only with content you may share.
 
 The judge is nondeterministic, so counts vary from run to run and are evidence for a human, not a score.
