@@ -1070,6 +1070,17 @@ def check_output(intent: str, content: str, *, schema: dict | None = None,
                   reasoning_leak=bool(re.search(r"</?think(?:ing)?>|<\|(?:analysis|channel)[^>]*>", content, re.I)))
     scores.setdefault("prompt_leaks", _prompt_leaks(content, prompt, transcript))
     scores.setdefault("untranslated_headings", None)
+    if expect_language:
+        headings = _h2_headings(text)
+        wrong_headings = [heading for heading in headings
+                          if (language := detect_language(heading)[0]) and language != expect_language]
+        prompt_language = detect_language(prompt or "")[0]
+        if prompt_language and prompt_language != expect_language:
+            wrong_headings.extend(_untranslated_headings(text, prompt))
+        scores["untranslated_headings"] = list(dict.fromkeys([*(scores["untranslated_headings"] or []), *wrong_headings]))
+    duplicate_12grams, worst_12gram = _repetition(text)
+    scores.setdefault("duplicate_12grams", duplicate_12grams)
+    scores.setdefault("worst_12gram", worst_12gram)
     if intent == "feedback_evaluation":
         def enum_paths(node: dict, prefix: str = "") -> list[str]:
             paths = [prefix] if "enum" in node else []
@@ -1159,6 +1170,8 @@ def _group_rows(rows: list[dict]) -> list[tuple[tuple, list[dict]]]:
 
 def _summarize_scores(selected: list[dict]) -> dict:
     summary = {
+        "usable": sum(row["usable"] for row in selected),
+        "unusable": sum(not row["usable"] for row in selected),
         "runs": len(selected), "intents": sorted({row["intent"] for row in selected}),
         "finish_stop": sum(row["finish"] == "stop" for row in selected),
         "expected_grammar_runs": sum(row["grammar"] == ("on" if row["output_kind"] == "json" else "off") for row in selected),
@@ -1231,6 +1244,34 @@ def command_score(args: argparse.Namespace) -> int:
         legacy_grammar_bad = (INTENTS[intent].get("legacy") and
                               record.get("grammar") != ("on" if INTENTS[intent]["kind"] == "json" else "off"))
         row["structurally_bad"] = bool(common_bad or legacy_grammar_bad or scores["structurally_bad"])
+        reasons = []
+        if scores["structurally_bad"] or legacy_grammar_bad:
+            reasons.append("invalid_output")
+        if scores["words"] == 0:
+            reasons.append("empty_visible_text")
+        elif scores["words"] < 3:
+            reasons.append("near_empty_visible_text")
+        if row["truncated"]:
+            reasons.append("truncation")
+        elif row["finish"] == "runaway_stopped":
+            reasons.append("runaway_repetition")
+        elif row["finish"] != "stop":
+            reasons.append("incomplete_output")
+        if scores["worst_12gram"] >= 6 and "runaway_repetition" not in reasons:
+            reasons.append("runaway_repetition")
+        if not args.allow_reasoning and (record.get("reasoning_chars", 0) or scores["reasoning_leak"]):
+            reasons.append("reasoning_leakage")
+        if scores["wrong_language"]:
+            reasons.append("wrong_language")
+        if scores["untranslated_headings"]:
+            reasons.append("untranslated_headings")
+        if intent == "summary" and getattr(args, "expect_no_todos", False) and scores.get("todo_count"):
+            reasons.append("unexpected_user_todos")
+        if record.get("error") is not None:
+            reasons.append("run_error")
+        if not case and record.get("transcript_sha256") != expected_transcript_hash:
+            reasons.append("transcript_mismatch")
+        row.update(usable=not reasons, unusable_reasons=reasons)
         rows.append(row)
     # Keep the existing per-arm summary for consumers; grouped_summary never pools cases or jobs.
     by_label = {label: _summarize_scores([row for row in rows if row["label"] == label])
@@ -1240,6 +1281,11 @@ def command_score(args: argparse.Namespace) -> int:
         grouped.setdefault(intent, {}).setdefault(case_label or "", {})[label] = _summarize_scores(selected)
     legacy_summary = not any("case_label" in row for row in rows) and len({row["intent"] for row in rows}) <= 1
     output = {"summary": by_label if legacy_summary else grouped, "grouped_summary": grouped, "runs": rows}
+    if len(by_label) == 2:
+        labels = list(by_label)
+        print(f"{'output':<12} {labels[0]:>16} {labels[1]:>16}", file=sys.stderr)
+        for metric in ("usable", "unusable"):
+            print(f"{metric:<12} {by_label[labels[0]][metric]:>16} {by_label[labels[1]][metric]:>16}", file=sys.stderr)
     rendered = json.dumps(output, ensure_ascii=False, indent=2) + "\n"
     if args.out:
         pathlib.Path(args.out).write_text(rendered, encoding="utf-8")
@@ -1981,6 +2027,7 @@ def build_parser() -> argparse.ArgumentParser:
     score.add_argument("--intent", choices=INTENTS, help="require this intent in all records")
     score.add_argument("--expect-language", choices=STOPWORDS)
     score.add_argument("--strict-language", action="store_true", help="count detected wrong language as structurally bad")
+    score.add_argument("--expect-no-todos", action="store_true", help="summary user_todos entries make output unusable")
     score.add_argument("--out")
     score.add_argument(
         "--translated-headings",

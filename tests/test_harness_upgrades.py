@@ -78,3 +78,49 @@ class MetalGate(unittest.TestCase):
                 with mock.patch.object(ev.subprocess, "run", return_value=result):
                     with self.assertRaisesRegex(RuntimeError, "refusing CPU/BLAS"):
                         ev._assert_metal(log, "fake-server")
+
+
+class UsableTally(unittest.TestCase):
+    def test_unusable_reasons_and_two_arm_table_are_additive(self):
+        from test_review_regressions import ReviewRegressions
+        scorer = ReviewRegressions()
+        phrase = "one two three four five six seven eight nine ten eleven twelve "
+        good = "The team has a plan and we will review the results with our colleagues."
+        rows = [
+            {"intent": "chat", "label": "candidate", "content": good},
+            {"intent": "chat", "label": "candidate", "content": "..."},
+            {"intent": "chat", "label": "candidate", "content": "Okay."},
+            {"intent": "chat", "label": "candidate", "content": good, "finish": "length"},
+            {"intent": "chat", "label": "incumbent", "content": phrase * 8},
+            {"intent": "chat", "label": "incumbent", "content": "<think>plan</think>" + good},
+            {"intent": "chat", "label": "incumbent", "content": good, "reasoning_chars": 30},
+            {"intent": "summary", "label": "incumbent", "grammar": "on", "content": "{broken"},
+            {"intent": "summary", "label": "incumbent", "grammar": "on", "content": json.dumps({
+                "title": "Plan", "recap_markdown": good,
+                "user_todos": [{"text": "Review the plan", "dueDate": None}]})},
+        ]
+        printed = io.StringIO()
+        with contextlib.redirect_stderr(printed):
+            output = scorer.score(rows, expect_no_todos=True)
+        expected = [[], ["empty_visible_text"], ["near_empty_visible_text"], ["truncation"],
+                    ["runaway_repetition"], ["reasoning_leakage"], ["reasoning_leakage"],
+                    ["invalid_output"], ["unexpected_user_todos"]]
+        for row, reasons in zip(output["runs"], expected):
+            self.assertTrue(set(reasons) <= set(row.get("unusable_reasons", [])), row)
+        self.assertEqual(sum(row.get("usable", False) for row in output["runs"]), 1)
+        self.assertIn("candidate", printed.getvalue())
+        self.assertIn("incumbent", printed.getvalue())
+        self.assertIn("usable", printed.getvalue())
+        group = output["grouped_summary"]["chat"][""]["candidate"]
+        self.assertEqual((group.get("usable"), group.get("unusable")), (1, 3))
+
+    def test_expected_language_and_headings_affect_usable_without_strict_flag(self):
+        from test_review_regressions import ReviewRegressions
+        scorer = ReviewRegressions()
+        output = scorer.score([{"intent": "chat", "content":
+            "The team has a plan and we will review the results with our colleagues."}], expect_language="de")
+        row = output["runs"][0]
+        self.assertFalse(row["structurally_bad"])
+        self.assertIn("wrong_language", row.get("unusable_reasons", []))
+        self.assertTrue(ev.check_output("chat", "## The plan and the next steps\nDas Team hat einen Plan und wir werden die Ergebnisse besprechen.",
+                                       expect_language="de").get("untranslated_headings"))
