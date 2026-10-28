@@ -26,9 +26,10 @@ trap cleanup EXIT INT TERM
 
 require_metal() {
   local output=$1
-  # Backend init logs use "GPU name"; --list-devices uses the MTL device table.
+  # Backend init logs use "GPU name"; --list-devices uses the MTL device table. Verbose server logs
+  # prefix each line with "<elapsed> <level> <module>:", e.g. "0.00.124.574 I cmn common_param:".
   if grep -Eq 'failed to create command queue|GPU name: \(null\)' "$output" ||
-     ! grep -Eiq 'GPU name:.*Apple|^[[:space:]]*(-[[:space:]]*)?MTL[0-9]+[[:space:]]*:.*Apple' "$output"; then
+     ! grep -Eiq 'GPU name:.*Apple|^[[:space:]]*([0-9]+(\.[0-9]+)+ [A-Z] [^:]*:)?[[:space:]]*(-[[:space:]]*)?MTL[0-9]+[[:space:]]*:.*Apple' "$output"; then
     echo "Metal GPU not positively identified in $output; refusing CPU/BLAS fallback" >&2
     exit 1
   fi
