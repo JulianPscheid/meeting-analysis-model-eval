@@ -21,12 +21,14 @@ import json
 import math
 import pathlib
 import platform
+import queue
 import re
 import socket
 import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -86,6 +88,63 @@ def _post_json(url: str, body: dict, timeout: float) -> dict:
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"HTTP {error.code}: {detail[:500]}") from error
+
+
+def _stream_completion(url: str, body: dict, timeout: float, runaway_repeats: int = 6,
+                       runaway_ngram: int = 12, runaway_tail: int = 512) -> dict:
+    request = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
+                                     headers={"Content-Type": "application/json"})
+    result = {"choices": [{"finish_reason": None, "message": {"content": "", "reasoning_content": ""}}]}
+    choice = result["choices"][0]
+    parts = {"content": [], "reasoning_content": []}
+    tails = {"content": "", "reasoning_content": ""}
+    deadline = time.monotonic() + timeout
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        for line in response:
+            if time.monotonic() > deadline:
+                result["error"] = "stream request timeout"
+                break
+            if not line.startswith(b"data:"):
+                continue
+            data = line[5:].strip()
+            if data == b"[DONE]":
+                break
+            event = json.loads(data)
+            for field in ("usage", "timings", "error"):
+                if field in event:
+                    result[field] = event[field]
+            settings = event.get("generation_settings", event.get("__verbose", {}).get("generation_settings"))
+            if settings is not None:
+                result["generation_settings"] = settings
+            delta_choice = _first_choice(event)
+            if delta_choice.get("finish_reason") is not None:
+                choice["finish_reason"] = delta_choice["finish_reason"]
+            runaway = False
+            for field in parts:
+                text = (delta_choice.get("delta") or {}).get(field) or ""
+                parts[field].append(text)
+                if text and runaway_repeats:
+                    # Bound detection work; the separate fragments retain the exact output.
+                    tails[field] = tails[field] + text
+                    words = tails[field].split()
+                    if len(words) > runaway_tail:
+                        tails[field] = " ".join(words[-runaway_tail:]) + (" " if tails[field][-1:].isspace() else "")
+                    runaway |= _repetition(tails[field], runaway_ngram)[1] >= runaway_repeats
+            if runaway:
+                choice["finish_reason"] = "runaway_stopped"
+                # Fixed worker slots make this snapshot belong to this still-open trial.
+                try:
+                    with urllib.request.urlopen(url.split("/v1/")[0] + "/slots", timeout=min(timeout, 5)) as slots:
+                        result["generation_settings"] = next(slot["params"] for slot in json.load(slots)
+                            if slot["id"] == body["id_slot"])
+                    result["generation_settings_source"] = "slots"
+                except (OSError, ValueError, KeyError, StopIteration) as error:
+                    result["error"] = f"runaway sampler snapshot failed: {error}"
+                break  # Closing the response cancels generation on the server.
+            if result.get("error") is not None:
+                break
+    choice["message"] = {field: "".join(fragments) for field, fragments in parts.items()}
+    return result
 
 
 def _wait_for_completion(url: str, kwargs: dict, process: subprocess.Popen, timeout: int) -> None:
@@ -326,6 +385,11 @@ def _run_cases(args: argparse.Namespace) -> tuple[str, str, str | None, list[dic
 def command_run(args: argparse.Namespace) -> int:
     if args.trials < 1:
         raise ValueError("--trials must be positive")
+    if args.parallel < 1:
+        raise ValueError("--parallel must be positive")
+    if (args.runaway_repeats < 0 or args.runaway_repeats == 1 or args.runaway_ngram < 1
+            or args.runaway_tail < args.runaway_ngram * max(2, args.runaway_repeats)):
+        raise ValueError("runaway repeats must be 0 or >=2; tail must fit repeated ngrams")
     if min(args.n_ctx, args.batch, args.gpu_layers) <= 0 or (
         args.max_tokens is not None and args.max_tokens <= 0
     ):
@@ -344,6 +408,9 @@ def command_run(args: argparse.Namespace) -> int:
         raise ValueError("--chat-template-kwargs must decode to an object")
 
     key = reuse_key(args, prompt, grammar, messages, transcript, kwargs)
+    key["runaway_stop"] = {"repeats": args.runaway_repeats, "ngram": args.runaway_ngram, "tail": args.runaway_tail}
+    if args.parallel != 1:
+        key["parallel"] = args.parallel
     if args.request_file:
         # Preserve the old key's fields and meaning on the legacy path. Request arms cover
         # every effective case as well as the exact source bytes (prompt_sha256).
@@ -375,7 +442,7 @@ def command_run(args: argparse.Namespace) -> int:
         "-m",
         str(pathlib.Path(args.model)),
         "-c",
-        str(args.n_ctx),
+        str(args.n_ctx * args.parallel),
         "-ngl",
         str(args.gpu_layers),
         "-b",
@@ -388,7 +455,8 @@ def command_run(args: argparse.Namespace) -> int:
         "--host",
         "127.0.0.1",
         "-np",
-        "1",
+        str(args.parallel),
+        "--slots",
     ]
     if args.swa_full == "on":
         command.append("--swa-full")
@@ -403,57 +471,72 @@ def command_run(args: argparse.Namespace) -> int:
             if args.require_metal:
                 _assert_metal(log_path, args.server)
 
-            with results_path.open("w", encoding="utf-8") as results_file:
-                for case in cases:
-                    for trial in range(1, args.trials + 1):
-                        seed = args.seed + trial - 1
-                        grammar = case["grammar"]
-                        body = {
-                            "messages": case["messages"], "max_tokens": case["maxTokens"],
-                            **_sampler_settings(args, seed), "cache_prompt": False,
-                            "stream": False, "verbose": True,
-                        }
-                        if grammar is not None:
-                            body["grammar"] = grammar
-                        if kwargs:
-                            body["chat_template_kwargs"] = kwargs
-                        record = {
-                            "label": label, "intent": args.intent, "trial": trial, "seed": seed,
-                            "model_file": pathlib.Path(args.model).name,
-                            "prompt_sha256": _sha256_text(prompt),
-                            "grammar": "on" if grammar is not None else "off",
-                            "grammar_sha256": _sha256_text(grammar) if grammar is not None else None,
-                            "transcript_sha256": _sha256_text(transcript),
-                            "finish": None, "content": "", "reasoning_chars": 0,
-                            "usage": None, "timings": None, "error": None,
-                            "sampler_settings": _sampler_settings(args, seed),
-                            "generation_settings": None,
-                        }
-                        if args.request_file:
-                            record.update(input_mode="request_file", case_label=case["label"],
-                                          request_messages=case["messages"], max_tokens=case["maxTokens"])
-                        if context is not None:
-                            record["app_supplied_context"] = context
-                        started = time.monotonic()
-                        try:
-                            response = _post_json(url, body, args.request_timeout)
-                            record["generation_settings"] = response.get("generation_settings", response.get("__verbose", {}).get("generation_settings"))
-                            _verify_sampler(record["generation_settings"] or {}, record["sampler_settings"])
-                            choice = _first_choice(response)
-                            message = choice.get("message") or {}
-                            record.update(finish=choice.get("finish_reason"),
-                                          content=message.get("content") or "",
-                                          reasoning_chars=len(message.get("reasoning_content") or ""),
-                                          usage=response.get("usage"), timings=response.get("timings"),
-                                          error=response.get("error"))
-                            if record["error"] is not None or record["finish"] is None:
-                                failed = True
-                        except Exception as error:
-                            failed = True
-                            record["error"] = str(error)
-                        record["elapsed_s"] = round(time.monotonic() - started, 3)
+            slot_ids = queue.SimpleQueue()
+            for slot_id in range(args.parallel):
+                slot_ids.put(slot_id)
+            worker = threading.local()
+
+            def assign_slot() -> None:
+                worker.slot_id = slot_ids.get()
+
+            def run_trial(item: tuple) -> dict:
+                case, trial = item
+                seed = args.seed + trial - 1
+                grammar = case["grammar"]
+                sampler = _sampler_settings(args, seed)
+                body = {"messages": case["messages"], "max_tokens": case["maxTokens"],
+                        **sampler, "cache_prompt": False, "stream": True, "verbose": True,
+                        "stream_options": {"include_usage": True}, "id_slot": worker.slot_id}
+                if grammar is not None:
+                    body["grammar"] = grammar
+                if kwargs:
+                    body["chat_template_kwargs"] = kwargs
+                record = {
+                    "label": label, "intent": args.intent, "trial": trial, "seed": seed,
+                    "model_file": pathlib.Path(args.model).name, "prompt_sha256": _sha256_text(prompt),
+                    "grammar": "on" if grammar is not None else "off",
+                    "grammar_sha256": _sha256_text(grammar) if grammar is not None else None,
+                    "transcript_sha256": _sha256_text(transcript), "parallel": args.parallel,
+                    "finish": None, "content": "", "reasoning_chars": 0,
+                    "usage": None, "timings": None, "error": None,
+                    "sampler_settings": sampler, "generation_settings": None,
+                }
+                if args.request_file:
+                    record.update(input_mode="request_file", case_label=case["label"],
+                                  request_messages=case["messages"], max_tokens=case["maxTokens"])
+                if context is not None:
+                    record["app_supplied_context"] = context
+                started = time.monotonic()
+                try:
+                    response = _stream_completion(url, body, args.request_timeout, args.runaway_repeats,
+                                                  args.runaway_ngram, args.runaway_tail)
+                    choice = _first_choice(response)
+                    message = choice.get("message") or {}
+                    record.update(finish=choice.get("finish_reason"), content=message.get("content") or "",
+                                  reasoning_chars=len(message.get("reasoning_content") or ""),
+                                  usage=response.get("usage"), timings=response.get("timings"),
+                                  error=response.get("error"), generation_settings=response.get("generation_settings"),
+                                  generation_settings_source=response.get("generation_settings_source", "completion"))
+                    _verify_sampler(record["generation_settings"] or {}, sampler)
+                except Exception as error:
+                    record["error"] = str(error)
+                record["elapsed_s"] = round(time.monotonic() - started, 3)
+                return record
+
+            reported_settings = []
+            trials = ((case, trial) for case in cases for trial in range(1, args.trials + 1))
+            with results_path.open("w", encoding="utf-8") as results_file, concurrent.futures.ThreadPoolExecutor(
+                    max_workers=args.parallel, initializer=assign_slot) as executor:
+                try:
+                    for record in executor.map(run_trial, trials):
+                        failed |= record["error"] is not None or record["finish"] is None
+                        reported_settings.append(record["generation_settings"])
                         results_file.write(json.dumps(record, ensure_ascii=False) + "\n")
                         results_file.flush()
+                except BaseException:
+                    process.terminate()  # Unblock active HTTP reads before the pool joins.
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
         finally:
             process.terminate()
             try:
@@ -463,8 +546,8 @@ def command_run(args: argparse.Namespace) -> int:
                 process.wait()
     # Only a complete, error-free run gets a reuse key; a killed or failed run leaves none.
     if not failed:
-        manifest["generation_settings"] = [json.loads(line)["generation_settings"]
-                                           for line in results_path.read_text(encoding="utf-8").splitlines()]
+        manifest.update(generation_settings=reported_settings, parallel=args.parallel,
+                        per_trial_speed_comparable=args.parallel == 1)
         (out / f"{label}.manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 1 if failed else 0
 
@@ -1185,7 +1268,7 @@ def _summarize_scores(selected: list[dict]) -> dict:
         "wrong_language_runs": sum(row["wrong_language"] for row in selected),
     }
     for field in ("prompt_per_second", "predicted_per_second"):
-        speeds = [row["timings"][field] for row in selected if isinstance(row["timings"], dict)
+        speeds = [row["timings"][field] for row in selected if row.get("parallel", 1) == 1 and isinstance(row["timings"], dict)
                   and isinstance(row["timings"].get(field), (int, float))]
         summary[f"median_{field}"] = statistics.median(speeds) if speeds else None
         summary[f"min_{field}"] = min(speeds) if speeds else None
@@ -1233,6 +1316,7 @@ def command_score(args: argparse.Namespace) -> int:
             "file": str(path), "line": line_number, "label": record["label"], "intent": intent,
             **{key: record.get(key) for key in ("trial", "seed", "prompt_sha256", "grammar", "grammar_sha256",
                 "transcript_sha256", "finish", "error", "reasoning_chars", "elapsed_s", "usage", "timings")},
+            "parallel": record.get("parallel", 1),
             **scores,
         }
         if case:
@@ -1839,7 +1923,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         reply = {{"choices": [{{"finish_reason": finish, "message": {{"content": "ok"}}}}]}}
         reply["generation_settings"] = {{k: v for k, v in body.items() if k not in
             ("messages", "max_tokens", "stream", "verbose", "cache_prompt", "grammar", "chat_template_kwargs")}}
-        data = json.dumps(reply).encode()
+        if body["stream"]:
+            reply["choices"][0]["delta"] = {{"content": "ok"}}
+            data = ("data: " + json.dumps(reply) + "\\n\\ndata: [DONE]\\n\\n").encode()
+        else:
+            data = json.dumps(reply).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -2013,6 +2101,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--app-user")
     run.add_argument("--language")
     run.add_argument("--trials", type=int, default=3)
+    run.add_argument("--parallel", type=int, default=1, help="concurrent llama-server slots; timings are contended above 1")
+    run.add_argument("--runaway-repeats", type=int, default=6, help="stop on repeated tail ngram; 0 disables")
+    run.add_argument("--runaway-ngram", type=int, default=12)
+    run.add_argument("--runaway-tail", type=int, default=512, help="tail size in whitespace words")
     run.add_argument("--seed", type=int, default=20260901)
     run.add_argument("--n-ctx", type=int, required=True)
     run.add_argument("--max-tokens", type=int, help="override request maxTokens (required in prompt mode)")

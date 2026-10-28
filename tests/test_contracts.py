@@ -248,19 +248,19 @@ class Requests(unittest.TestCase):
             self.request.write_text(self.request.read_text()+' ')
             self.assertNotEqual(original['reuse_key_sha256'],key()['reuse_key_sha256']);self.write()
             sent=[]
-            def reply(url,body,timeout):
+            def reply(url,body,*unused):
                 sent.append(body)
                 return {'choices':[{'finish_reason':'stop','message':{'content':'ok'}}],
-                        '__verbose': {'generation_settings': ev._sampler_settings(args, body['seed'])}}
+                        'generation_settings': ev._sampler_settings(args, body['seed'])}
             args.key_only=False
-            with mock.patch.object(ev.subprocess,'Popen'),mock.patch.object(ev,'_free_port',return_value=12345),mock.patch.object(ev,'_wait_for_completion'),mock.patch.object(ev,'_assert_metal'),mock.patch.object(ev,'_post_json',side_effect=reply):
+            with mock.patch.object(ev.subprocess,'Popen'),mock.patch.object(ev,'_free_port',return_value=12345),mock.patch.object(ev,'_wait_for_completion'),mock.patch.object(ev,'_assert_metal'),mock.patch.object(ev,'_stream_completion',side_effect=reply):
                 self.assertEqual(ev.command_run(args),0)
             self.assertEqual(len(sent),4)
             for index,body in enumerate(sent):
                 case=self.cases[index//2]
                 self.assertEqual(body['messages'],case['messages'])
                 self.assertEqual(body['max_tokens'],case['maxTokens'])
-                self.assertFalse(body['stream'])
+                self.assertTrue(body['stream'])
                 self.assertEqual(body['repeat_last_n'],4096)
                 self.assertEqual(body['min_p'],0)
                 self.assertEqual(body.get('grammar'),case['grammar'])

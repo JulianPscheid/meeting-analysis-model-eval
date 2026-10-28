@@ -26,19 +26,19 @@ class SamplerParity(unittest.TestCase):
         args = ev.build_parser().parse_args(fixture.argv())
         sent = []
 
-        def reply(url, body, timeout):
+        def reply(url, body, *unused):
             sent.append(body)
             settings = {key: value for key, value in body.items() if key not in
                         {"messages", "grammar", "stream", "verbose", "cache_prompt", "max_tokens"}}
             return {"choices": [{"finish_reason": "stop", "message": {"content": "okay"}}],
-                    "__verbose": {"generation_settings": {**settings, "server_extra": 42}}}
+                    "generation_settings": {**settings, "server_extra": 42}}
 
         with mock.patch.object(ev, "_host", return_value={}), \
              mock.patch.object(ev, "_command_text", return_value="version: fake"), \
              mock.patch.object(ev.subprocess, "Popen"), \
              mock.patch.object(ev, "_wait_for_completion"), \
              mock.patch.object(ev, "_assert_metal"), \
-             mock.patch.object(ev, "_post_json", side_effect=reply):
+             mock.patch.object(ev, "_stream_completion", side_effect=reply):
             self.assertEqual(ev.command_run(args), 0)
         neutrals = {"repeat_penalty": 1.0, "dry_multiplier": 0, "xtc_probability": 0,
                     "typical_p": 1.0, "min_p": 0, "frequency_penalty": 0,
@@ -189,3 +189,155 @@ class JudgeReliability(unittest.TestCase):
         fixture.results.write_text("")
         with mock.patch.object(ev, "_command_text", return_value="codex-cli test"):
             self.assertEqual(ev.command_judge(args), 1, "zero judged trials must fail")
+
+
+class RunSpeed(unittest.TestCase):
+    def test_interrupt_stops_owned_server_before_waiting_for_threads(self):
+        from test_contracts import Requests
+        fixture = Requests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        args = ev.build_parser().parse_args(fixture.argv())
+        observations = []
+        with mock.patch.object(ev, "reuse_key", return_value={}), \
+             mock.patch.object(ev, "_wait_for_completion"), mock.patch.object(ev, "_assert_metal"), \
+             mock.patch.object(ev.subprocess, "Popen") as process, \
+             mock.patch.object(ev.concurrent.futures, "ThreadPoolExecutor") as pool:
+            pool.return_value.__enter__.return_value.map.side_effect = KeyboardInterrupt
+            pool.return_value.__exit__.side_effect = lambda *unused: observations.append(process.return_value.terminate.called)
+            with self.assertRaises(KeyboardInterrupt):
+                ev.command_run(args)
+        self.assertEqual(observations, [True], "interrupt must not wait for the request timeout")
+
+    def test_stream_stops_runaway_and_preserves_partial_output_and_slot_settings(self):
+        self.assertTrue(callable(getattr(ev, "_stream_completion", None)), "run must consume SSE incrementally")
+        phrase = "one two three four five six seven eight nine ten eleven twelve "
+        body = {"seed": 123, "id_slot": 0}
+        events = [{"choices": [{"delta": {"content": phrase}, "finish_reason": None}]}] * 10
+        events += [{"choices": [{"delta": {}, "finish_reason": "stop"}]}]
+        raw = b"".join(b"data: " + json.dumps(event).encode() + b"\n\n" for event in events) + b"data: [DONE]\n\n"
+        for threshold, finish in ((6, "runaway_stopped"), (0, "stop")):
+            response = io.BytesIO(raw)
+            def open_url(request, **kwargs):
+                if isinstance(request, str):
+                    return io.BytesIO(b'[{"id":0,"params":{"seed":123,"server_extra":42}}]')
+                return response
+            with mock.patch.object(ev.urllib.request, "urlopen", side_effect=open_url):
+                result = ev._stream_completion("http://fake/v1/chat/completions", body, 10, threshold)
+            self.assertTrue(response.closed)
+            choice = result["choices"][0]
+            self.assertEqual(choice["finish_reason"], finish)
+            if threshold:
+                self.assertLess(len(choice["message"]["content"]), len(phrase) * 10)
+                self.assertEqual(result["generation_settings"]["server_extra"], 42)
+
+    def test_stream_final_metadata_reasoning_usage_and_errors(self):
+        self.assertTrue(callable(getattr(ev, "_stream_completion", None)), "run must preserve SSE metadata")
+        events = [
+            {"choices": [{"delta": {"reasoning_content": "thought"}, "finish_reason": None}]},
+            {"choices": [{"delta": {"content": "visible answer"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "length"}],
+             "__verbose": {"generation_settings": {"seed": 1}}},
+            {"choices": [], "usage": {"completion_tokens": 9}, "timings": {"predicted_per_second": 4}},
+        ]
+        raw = "".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n"
+        with mock.patch.object(ev.urllib.request, "urlopen", return_value=io.BytesIO(raw.encode())):
+            result = ev._stream_completion("http://fake/v1/chat/completions", {}, 10, 6)
+        self.assertEqual(result["choices"][0]["message"], {"content": "visible answer", "reasoning_content": "thought"})
+        self.assertEqual(result["generation_settings"], {"seed": 1})
+        self.assertEqual(result["usage"]["completion_tokens"], 9)
+        self.assertEqual(result["timings"]["predicted_per_second"], 4)
+        with mock.patch.object(ev.urllib.request, "urlopen", return_value=io.BytesIO(b'data: {"error":"bad request"}\n\n')):
+            result = ev._stream_completion("http://fake/v1/chat/completions", {}, 10, 6)
+        self.assertEqual(result["error"], "bad request")
+
+    def test_parallel_runs_keep_order_seed_context_and_suppress_speed_claims(self):
+        from test_contracts import Requests
+        fixture = Requests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        (fixture.root / "server").write_bytes(b"fake")
+        (fixture.root / "model.gguf").write_bytes(b"fake")
+        args = ev.build_parser().parse_args(fixture.argv())
+        self.assertEqual(getattr(args, "parallel", None), 1, "default remains serial")
+        args.parallel = 2
+        active = peak = 0
+        lock = threading.Lock()
+
+        def reply(url, body, *unused):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.04 if body["seed"] == args.seed else 0.01)
+            with lock:
+                active -= 1
+            return {"choices": [{"finish_reason": "stop", "message": {"content": "A usable response"}}],
+                    "generation_settings": ev._sampler_settings(args, body["seed"]),
+                    "timings": {"predicted_per_second": 100}}
+
+        with mock.patch.object(ev, "_host", return_value={}), \
+             mock.patch.object(ev, "_command_text", return_value="version: fake"), \
+             mock.patch.object(ev.subprocess, "Popen") as popen, \
+             mock.patch.object(ev, "_wait_for_completion"), mock.patch.object(ev, "_assert_metal"), \
+             mock.patch.object(ev, "_stream_completion", side_effect=reply):
+            self.assertEqual(ev.command_run(args), 0)
+        self.assertEqual(peak, 2)
+        command = popen.call_args.args[0]
+        self.assertEqual(command[command.index("-np") + 1], "2")
+        self.assertEqual(command[command.index("-c") + 1], "8192")
+        output = fixture.root / "out/arm.runs.jsonl"
+        records = [json.loads(line) for line in output.read_text().splitlines()]
+        self.assertEqual([r["seed"] for r in records], [args.seed, args.seed + 1] * 2)
+        self.assertEqual([r["case_label"] for r in records], ["case one"] * 2 + ["case two"] * 2)
+        self.assertTrue(all(r.get("parallel") == 2 for r in records))
+        manifest = json.loads((fixture.root / "out/arm.manifest.json").read_text())
+        self.assertEqual(manifest.get("parallel"), 2)
+        self.assertEqual(manifest["reuse_key"].get("parallel"), 2)
+        score = ev.build_parser().parse_args(["score", "--request-file", str(fixture.request), str(output)])
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            ev.command_score(score)
+        result = json.loads(printed.getvalue())
+        self.assertIsNone(result["summary"]["chat"]["case one"]["arm"]["median_predicted_per_second"])
+
+    def test_stream_http_disconnect_reaches_fake_server(self):
+        import http.server
+        disconnected = threading.Event()
+        phrase = "one two three four five six seven eight nine ten eleven twelve "
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = b'[{"id":0,"params":{"seed":123}}]'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                frame = ("data: " + json.dumps({"choices": [{"delta": {"content": phrase}}]}) + "\n\n").encode()
+                try:
+                    for _ in range(100000):
+                        self.wfile.write(frame)
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    disconnected.set()
+
+            def log_message(self, *args):
+                pass
+
+        with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                result = ev._stream_completion(f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+                                               {"seed": 123, "id_slot": 0}, 5)
+                self.assertEqual(result["choices"][0]["finish_reason"], "runaway_stopped")
+                self.assertTrue(disconnected.wait(2), "server must observe the cancelled stream")
+            finally:
+                server.shutdown()
+                thread.join()
