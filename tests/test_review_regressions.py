@@ -141,6 +141,15 @@ class ReviewRegressions(unittest.TestCase):
         result = self.score([{"intent": "feedback_evaluation", "content": content}], schema)
         self.assertEqual(result["summary"]["arm"]["verdict_distribution"], {"show": 2, "hide": 1})
 
+    def test_summary_accepts_trailing_suggested_topic(self):
+        base = {"title": "T", "recap_markdown": "## Brief\n\nFacts", "user_todos": []}
+        with_topic = json.dumps({**base, "suggested_topic": None})
+        self.assertTrue(ev.score_content(with_topic, "transcript")["exact_fields_in_order"])
+        reordered = json.dumps({"suggested_topic": None, **base})
+        self.assertFalse(ev.score_content(reordered, "transcript")["exact_fields_in_order"])
+        extra = json.dumps({**base, "suggested_topic": None, "other": 1})
+        self.assertFalse(ev.score_content(extra, "transcript")["exact_fields_in_order"])
+
     def test_text_code_fences_are_structurally_bad(self):
         for intent, body in (("chat", "Answer."), ("transcript_summary", "Summary."),
                              ("notes", "# Review\n## Budget\nThe budget moved.")):

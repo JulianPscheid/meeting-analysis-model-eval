@@ -503,11 +503,11 @@ def score_content(
         parsed = json.loads(content)
     except Exception as exception:
         error = str(exception)
-    exact_fields = isinstance(parsed, dict) and list(parsed.keys()) == [
-        "title",
-        "recap_markdown",
-        "user_todos",
-    ]
+    # suggested_topic is optional and last: newer grammars emit it after user_todos.
+    exact_fields = isinstance(parsed, dict) and list(parsed.keys()) in (
+        ["title", "recap_markdown", "user_todos"],
+        ["title", "recap_markdown", "user_todos", "suggested_topic"],
+    )
     recap = parsed.get("recap_markdown", "") if isinstance(parsed, dict) else ""
     todos = parsed.get("user_todos") if isinstance(parsed, dict) else None
     todos_shape = isinstance(todos, list) and all(
