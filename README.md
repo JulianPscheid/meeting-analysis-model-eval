@@ -174,8 +174,13 @@ Every output reports `reasoning_chars`, `reasoning_leak`, `prompt_leaks`, `words
 `empty_visible_text`, `truncated`, `detected_language`, `language_confidence` and `wrong_language`.
 `words` counts Unicode word tokens in visible text (JSON string values or XML
 text, excluding field names, tags and XML attributes). Zero words sets
-`empty_visible_text: true` and makes every intent structurally bad, including
-whitespace, zero-width characters and punctuation-only output such as `...`.
+`empty_visible_text: true` and makes output structurally bad, including
+whitespace, zero-width characters and punctuation-only output such as `...`,
+except when JSON validates against a supplied schema. Such JSON (including
+numeric/boolean payloads, empty arrays or schema-permitted empty strings) keeps
+the diagnostic but is not structurally bad or unusable solely for zero words.
+Other structure, completion and reasoning checks still apply. Non-empty output
+with fewer than three words retains the near-empty usability check.
 Incomplete/non-stop responses, invalid structure and reasoning leakage also make
 a run structurally bad.
 `finish == "length"` is always a failure. `--allow-reasoning` permits recorded

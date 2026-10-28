@@ -1168,7 +1168,8 @@ def check_output(intent: str, content: str, *, schema: dict | None = None,
         scores["structurally_bad"] |= bool(fenced or errors)
     words = len(_tokens(text))
     scores["empty_visible_text"] = words == 0
-    scores["structurally_bad"] |= scores["empty_visible_text"]
+    schema_valid_json = schema is not None and scores.get("json_valid") and not scores["schema_errors"]
+    scores["structurally_bad"] |= scores["empty_visible_text"] and not schema_valid_json
     detected, confidence = detect_language(text)
     scores.update(output_kind=kind, words=words, detected_language=detected,
                   language_confidence=confidence,
@@ -1356,7 +1357,8 @@ def command_score(args: argparse.Namespace) -> int:
         if scores["structurally_bad"] or legacy_grammar_bad:
             reasons.append("invalid_output")
         if scores["words"] == 0:
-            reasons.append("empty_visible_text")
+            if not (schema is not None and scores.get("json_valid") and not scores["schema_errors"]):
+                reasons.append("empty_visible_text")
         elif scores["words"] < 3:
             reasons.append("near_empty_visible_text")
         if row["truncated"]:

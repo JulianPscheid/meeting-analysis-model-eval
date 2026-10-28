@@ -36,7 +36,7 @@ class ReviewRegressions(unittest.TestCase):
                 self.assertEqual(ev.command_score(args), 0)
             return json.loads(printed.getvalue())
 
-    def test_zero_word_visible_output_for_every_intent(self):
+    def test_zero_word_visible_output_reports_field_for_every_intent(self):
         for intent, spec in ev.INTENTS.items():
             schema, messages = None, []
             if spec["kind"] == "json":
@@ -59,14 +59,15 @@ class ReviewRegressions(unittest.TestCase):
             with self.subTest(intent=intent):
                 scores = ev.check_output(intent, content, schema=schema, messages=messages)
                 self.assertEqual(scores["words"], 0)
-                self.assertTrue(scores["structurally_bad"], scores)
+                self.assertEqual(scores["structurally_bad"], spec["kind"] != "json", scores)
                 self.assertIs(scores["empty_visible_text"], True)
 
     def test_zero_words_are_bad_for_whitespace_and_punctuation(self):
         for text in ("", " \t\n", "\u200b\u200d\ufeff", "..."):
             for intent, content, schema in (
                 ("chat", text, None), ("transcript_summary", text, None),
-                ("feedback_analysis", json.dumps({"words": text}), {"type": "object"}),
+                ("feedback_analysis", json.dumps({"words": text}), {"type": "object", "properties": {
+                    "words": {"enum": ["Visible words."]}}}),
                 ("highlight_analysis", f"<highlight><meaning>{text}</meaning></highlight>",
                  {"root": "highlight", "children": ["meaning"]}),
             ):

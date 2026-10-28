@@ -9,6 +9,47 @@ import evaluate as ev
 
 
 class ScoringGaps(unittest.TestCase):
+    def test_schema_valid_json_without_words_is_clean_and_usable(self):
+        from test_review_regressions import ReviewRegressions
+        cases = (
+            ({"count": 4, "ready": True}, {"type": "object", "properties": {
+                "count": {"type": "integer"}, "ready": {"type": "boolean"}}}),
+            ([], {"type": "array", "items": {"type": "integer"}}),
+            ([0, False], {"type": "array", "items": {"type": ["integer", "boolean"]}}),
+            (0, {"type": "integer"}), (False, {"type": "boolean"}),
+            (None, {"type": "null"}), ("", {"type": "string"}),
+        )
+        for value, schema in cases:
+            with self.subTest(value=value):
+                row = {"intent": "feedback_analysis", "content": json.dumps(value)}
+                scores = ev.check_output(row["intent"], row["content"], schema=schema)
+                self.assertTrue(scores["empty_visible_text"])
+                self.assertEqual(scores["schema_errors"], [])
+                self.assertFalse(scores["structurally_bad"], scores)
+                result = ReviewRegressions().score([row], schema)
+                self.assertTrue(result["runs"][0]["usable"], result)
+                self.assertEqual(result["runs"][0]["unusable_reasons"], [])
+                self.assertEqual(result["summary"]["arm"]["usable"], 1)
+
+    def test_empty_json_keeps_other_failure_gates(self):
+        from test_review_regressions import ReviewRegressions
+        for content, schema in (("[]", {"type": "array", "minItems": 1}),
+                                ("[broken", {"type": "array"}),
+                                ("```json\n[]\n```", {"type": "array"})):
+            with self.subTest(content=content):
+                row = {"intent": "feedback_analysis", "content": content}
+                scored = ReviewRegressions().score([row], schema)["runs"][0]
+                self.assertTrue(scored["structurally_bad"], scored)
+                self.assertFalse(scored["usable"])
+        for extra, reason in (({"finish": "length"}, "truncation"),
+                              ({"reasoning_chars": 8}, "reasoning_leakage")):
+            row = {"intent": "feedback_analysis", "content": "[]", **extra}
+            scored = ReviewRegressions().score([row], {"type": "array"})["runs"][0]
+            self.assertTrue(scored["structurally_bad"], scored)
+            self.assertIn(reason, scored["unusable_reasons"])
+        self.assertTrue(ev.check_output("chat", "...")["structurally_bad"])
+        self.assertTrue(ev.check_output("summary", "[]")["structurally_bad"])
+
     def test_json_tail_pointer_selects_last_complete_container(self):
         turns = [{"id": 7, "text": 'Keep the closing brace } and quote " here.'}]
         batch = {"raw/turns": turns, "nested": {"last": [9]}}
