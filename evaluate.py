@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import concurrent.futures
 import contextlib
 import hashlib
 import html
@@ -34,6 +35,7 @@ import xml.etree.ElementTree as ET
 
 
 ACK = "I am ready to assist you. Please provide the transcript and any relevant context."
+DEFAULT_JUDGE_MODEL = "gpt-6.1-sol"
 
 
 def build_messages(
@@ -1407,13 +1409,13 @@ INPUT:
 """
 
 
-def _judge_once(prompt: str, intent: str = "summary") -> tuple[dict | None, str | None, str]:
+def _judge_once(prompt: str, intent: str = "summary", model: str = DEFAULT_JUDGE_MODEL) -> tuple[dict | None, str | None, str]:
     with tempfile.NamedTemporaryFile(
         mode="w+", encoding="utf-8", prefix="meeting-analysis-model-eval-answer-", suffix=".json"
     ) as output_file:
         completed = subprocess.run(
             [
-                "codex", "exec", "--sandbox", "read-only", "--output-last-message",
+                "codex", "exec", "-m", model, "--sandbox", "read-only", "--output-last-message",
                 output_file.name, "--skip-git-repo-check", "-",
             ],
             input=prompt,
@@ -1432,18 +1434,24 @@ def _judge_once(prompt: str, intent: str = "summary") -> tuple[dict | None, str 
         return judgment, error, raw
 
 
-def _judge_with_retry(prompt: str, intent: str = "summary") -> tuple[dict | None, str | None, str | None]:
+def _judge_with_retry(prompt: str, intent: str = "summary", model: str = DEFAULT_JUDGE_MODEL) -> tuple[dict | None, str | None, str | None]:
     errors = []
     judge_raw = None
-    for _ in range(2):
+    for attempt in range(4):
+        rate_limited = False
         try:
-            judgment, error, raw = _judge_once(prompt, intent)
+            judgment, error, raw = _judge_once(prompt, intent, model)
             if error is None:
                 return judgment, None, None
             errors.append(error)
             judge_raw = raw
         except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
             errors.append(str(error))
+            rate_limited = bool(re.search(r"\b429\b", str(error)))
+        if rate_limited and attempt < 3:
+            time.sleep(2 ** attempt)
+        elif attempt >= 1:
+            break
     return None, "; retry: ".join(errors), judge_raw
 
 
@@ -1466,6 +1474,8 @@ def _judgment_counts(judged: list[dict]) -> dict:
 
 
 def command_judge(args: argparse.Namespace) -> int:
+    if args.judge_concurrency < 1 or args.max_judge_errors < 0:
+        raise ValueError("--judge-concurrency must be positive and --max-judge-errors nonnegative")
     request_path = getattr(args, "request_file", None)
     if request_path and (args.transcript or args.summary_prompt_file or args.notes_prompt_file):
         raise ValueError("--request-file cannot be combined with legacy judge input flags")
@@ -1489,9 +1499,10 @@ def command_judge(args: argparse.Namespace) -> int:
     for path, line_number, record, intent in records:
         case = _record_request(record, request_hash, cases, request_path)
         inputs.append(case)
-    results = []
-    failed = False
-    for (path, line_number, record, intent), case in zip(records, inputs):
+    cli_version = _command_text(["codex", "--version"])
+
+    def judge_trial(item: tuple) -> dict:
+        (path, line_number, record, intent), case = item
         judgment, error, judge_raw = None, None, None
         if not case and record.get("transcript_sha256") != transcript_hash:
             error = "transcript SHA-256 does not match the run"
@@ -1504,8 +1515,7 @@ def command_judge(args: argparse.Namespace) -> int:
                 _judge_prompt(prompts.get(intent, ""), transcript, record["content"], intent,
                               record.get("app_supplied_context"),
                               request_messages=case["messages"] if case else None,
-                              schema=schema, expect_language=getattr(args, "expect_language", None)), intent)
-        failed = failed or error is not None
+                              schema=schema, expect_language=getattr(args, "expect_language", None)), intent, args.judge_model)
         result = {"file": str(path), "line": line_number, "label": record["label"],
                   "trial": record.get("trial"), "intent": intent,
                   "judgment": judgment, "judge_error": error}
@@ -1513,7 +1523,10 @@ def command_judge(args: argparse.Namespace) -> int:
             result["case_label"] = record["case_label"]
         if judge_raw is not None:
             result["judge_raw"] = judge_raw
-        results.append(result)
+        return result
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.judge_concurrency) as executor:
+        results = list(executor.map(judge_trial, zip(records, inputs)))
 
     def summarize(selected: list[dict]) -> dict:
         judged = [row["judgment"] for row in selected if row["judgment"] is not None]
@@ -1530,12 +1543,17 @@ def command_judge(args: argparse.Namespace) -> int:
     for (intent, case_label, label), selected in _group_rows(results):
         grouped.setdefault(intent, {}).setdefault(case_label or "", {})[label] = summarize(selected)
     legacy_summary = not any("case_label" in row for row in results) and len({row["intent"] for row in results}) <= 1
-    rendered = json.dumps({"summary": summary if legacy_summary else grouped,
+    rendered = json.dumps({"judge_model": args.judge_model, "judge_cli_version": cli_version,
+                           "judge_concurrency": args.judge_concurrency,
+                           "max_judge_errors": args.max_judge_errors,
+                           "summary": summary if legacy_summary else grouped,
                            "grouped_summary": grouped, "runs": results}, ensure_ascii=False, indent=2) + "\n"
     output = pathlib.Path(args.out)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(rendered, encoding="utf-8")
-    return 1 if failed else 0
+    errors = sum(row["judge_error"] is not None for row in results)
+    judged = sum(row["judgment"] is not None for row in results)
+    return 1 if judged == 0 or errors > args.max_judge_errors else 0
 
 
 def parse_kv_text(text: str) -> dict | None:
@@ -2059,6 +2077,9 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--schema-file", help="output contract sent to the blind judge")
     judge.add_argument("--intent", choices=INTENTS, help="require this intent in all records")
     judge.add_argument("--expect-language", choices=STOPWORDS)
+    judge.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL, help="pinned Codex model slug")
+    judge.add_argument("--max-judge-errors", type=int, default=0)
+    judge.add_argument("--judge-concurrency", type=int, default=1)
     judge.add_argument("--out", required=True)
     judge.add_argument("results", nargs="+")
     judge.set_defaults(func=command_judge)

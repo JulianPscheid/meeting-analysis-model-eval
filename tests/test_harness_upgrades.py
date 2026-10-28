@@ -6,6 +6,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -124,3 +126,66 @@ class UsableTally(unittest.TestCase):
         self.assertIn("wrong_language", row.get("unusable_reasons", []))
         self.assertTrue(ev.check_output("chat", "## The plan and the next steps\nDas Team hat einen Plan und wir werden die Ergebnisse besprechen.",
                                        expect_language="de").get("untranslated_headings"))
+
+
+class JudgeReliability(unittest.TestCase):
+    def test_pinned_model(self):
+        with mock.patch.object(ev.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")) as run:
+            ev._judge_once("public invented prompt")
+        command = run.call_args.args[0]
+        self.assertIn("-m", command)
+        self.assertEqual(command[command.index("-m") + 1], "gpt-6.1-sol")
+
+    def test_rate_limit_backoff(self):
+        with mock.patch.object(ev, "_judge_once", side_effect=[RuntimeError("HTTP 429 rate limited"),
+                               RuntimeError("HTTP 429 rate limited"), ({}, None, "{}")]) as judge, \
+             mock.patch.object(ev.time, "sleep") as sleep:
+            result = ev._judge_with_retry("invented prompt")
+        self.assertIsNone(result[1])
+        self.assertEqual(judge.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+
+    def test_zero_judgments_threshold_and_bounded_concurrency(self):
+        from test_contracts import Requests
+        fixture = Requests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        out = fixture.root / "judge.json"
+        args = ev.build_parser().parse_args(["judge", "--request-file", str(fixture.request),
+                                           "--out", str(out), str(fixture.results)])
+        args.judge_model = "gpt-6.1-sol"
+        args.judge_concurrency = 2
+        args.max_judge_errors = 1
+        fixture.results.write_text("\n".join(json.dumps(fixture.record(trial=i)) for i in range(4)))
+        valid = {"unsupported_claims": [], "coverage": {"early": True, "middle": True, "late": True},
+                 "length_verdict": "appropriate", "length_note": "Fits.", "structural_leaks": [], "todos": []}
+        lock = threading.Lock()
+        active = peak = calls = 0
+
+        def judge(*unused):
+            nonlocal active, peak, calls
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                calls += 1
+                number = calls
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return (None, "bad JSON", "bad") if number == 1 else (valid, None, None)
+
+        with mock.patch.object(ev, "_judge_with_retry", side_effect=judge), \
+             mock.patch.object(ev, "_command_text", return_value="codex-cli test"):
+            self.assertEqual(ev.command_judge(args), 0, "one tolerated error with successful judgments")
+        result = json.loads(out.read_text())
+        self.assertEqual(peak, 2)
+        self.assertEqual([r["trial"] for r in result["runs"]], list(range(4)))
+        self.assertEqual(result.get("judge_model"), args.judge_model)
+        self.assertEqual(result.get("judge_cli_version"), "codex-cli test")
+        args.max_judge_errors = 0
+        with mock.patch.object(ev, "_judge_with_retry", return_value=(None, "bad", None)), \
+             mock.patch.object(ev, "_command_text", return_value="codex-cli test"):
+            self.assertEqual(ev.command_judge(args), 1)
+        fixture.results.write_text("")
+        with mock.patch.object(ev, "_command_text", return_value="codex-cli test"):
+            self.assertEqual(ev.command_judge(args), 1, "zero judged trials must fail")
