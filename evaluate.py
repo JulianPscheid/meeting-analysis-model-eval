@@ -299,7 +299,10 @@ def _verify_sampler(reported: dict, requested: dict) -> None:
         if field not in reported:
             raise ValueError(f"generation_settings missing sampler field {field}")
         actual = reported[field]
-        if not isinstance(actual, (int, float)) or not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7):
+        # Integers (seed, top_k, repeat_last_n, mirostat) must match exactly; floats may round-trip.
+        matches = (actual == expected if isinstance(expected, int)
+                   else math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7))
+        if not isinstance(actual, (int, float)) or not matches:
             raise ValueError(f"generation_settings {field}={actual!r}, requested {expected!r}")
 
 

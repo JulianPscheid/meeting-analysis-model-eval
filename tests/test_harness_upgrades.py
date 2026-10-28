@@ -69,6 +69,12 @@ class SamplerParity(unittest.TestCase):
             ev._verify_sampler({}, {"repeat_penalty": 1.0})
         ev._verify_sampler({"top_p": 0.80000001}, {"top_p": 0.8})
 
+    def test_integer_sampler_fields_must_match_exactly(self):
+        with self.assertRaisesRegex(ValueError, "seed"):
+            ev._verify_sampler({"seed": 20260902}, {"seed": 20260901})
+        with self.assertRaisesRegex(ValueError, "repeat_last_n"):
+            ev._verify_sampler({"repeat_last_n": 1000001}, {"repeat_last_n": 1000000})
+
 
 class MetalGate(unittest.TestCase):
     def test_device_listing_formats_and_cpu_refusal(self):
