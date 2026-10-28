@@ -176,9 +176,10 @@ Every output reports `reasoning_chars`, `reasoning_leak`, `prompt_leaks`, `words
 text, excluding field names, tags and XML attributes). Zero words sets
 `empty_visible_text: true` and makes output structurally bad, including
 whitespace, zero-width characters and punctuation-only output such as `...`,
-except when JSON validates against a supplied schema. Such JSON (including
-numeric/boolean payloads, empty arrays or schema-permitted empty strings) keeps
-the diagnostic but is not structurally bad or unusable solely for zero words.
+except when JSON validates against a supplied schema or an XML `any_of` field
+matches. Such output (including numeric/boolean JSON, empty arrays or
+schema-permitted empty strings) keeps the diagnostic but is not structurally
+bad or unusable solely for zero words.
 Other structure, completion and reasoning checks still apply. Non-empty output
 with fewer than three words retains the near-empty usability check.
 Incomplete/non-stop responses, invalid structure and reasoning leakage also make
@@ -220,6 +221,15 @@ An XML schema lists a `root`, required direct `children` and optional
 are allowed anywhere in the tree. The scorer reports `xml_valid`, `root_matches`,
 `missing_elements` and `unknown_elements`. DTD/entity declarations are refused.
 This small contract does not validate attributes, ordering or element counts.
+Strict mode is the default (or set `mode` to `strict`). To accept any one field,
+use `{"mode": "any_of", "fields": ["meaning", "evidence"]}` instead. At least one
+listed element, including the root or a nested element, must contain non-empty
+trimmed text (including descendant text; attributes do not count). Other root
+names and unknown elements are tolerated; absent or all-empty listed fields
+fail. `matched_fields` lists successful fields, `missing_elements` lists the rest,
+and `root_matches` is null for parsed any-of output. `unknown_elements` remains a
+diagnostic. A matched field suffices even if its text has no word tokens; other
+completion, reasoning and nonzero near-empty usability checks still apply.
 
 `x-eval` holds generic job metadata alongside the JSON schema:
 

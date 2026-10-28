@@ -900,17 +900,27 @@ def _check_json(content: str, schema: dict | None, **_: object) -> dict:
 
 
 def _check_xml(content: str, schema: dict | None, **_: object) -> dict:
-    if not schema or not isinstance(schema.get("root"), str) or not isinstance(schema.get("children"), list):
-        raise ValueError("XML schema requires root (string) and children (required direct-child names)")
-    required = schema["children"]
-    allowed_names = schema.get("allowed_elements", [schema["root"], *required])
+    mode = (schema or {}).get("mode", "strict")
+    if mode not in ("strict", "any_of"):
+        raise ValueError("XML schema mode must be strict or any_of")
+    if mode == "any_of":
+        required = schema.get("fields")
+        if not isinstance(required, list) or not required:
+            raise ValueError("XML any_of schema requires a non-empty fields list")
+        contract_names = allowed_names = required
+    else:
+        if not schema or not isinstance(schema.get("root"), str) or not isinstance(schema.get("children"), list):
+            raise ValueError("XML schema requires root (string) and children (required direct-child names)")
+        required = schema["children"]
+        contract_names = [schema["root"], *required]
+        allowed_names = schema.get("allowed_elements", contract_names)
     name_pattern = r"[A-Za-z_][A-Za-z0-9_.-]*"
     if (not isinstance(allowed_names, list) or
             any(not isinstance(name, str) or not re.fullmatch(name_pattern, name)
-                for name in [schema["root"], *required, *allowed_names])):
+                for name in [*contract_names, *allowed_names])):
         raise ValueError("XML schema names must be simple element names")
     allowed = set(allowed_names)
-    if not {schema["root"], *required} <= allowed:
+    if not set(contract_names) <= allowed:
         raise ValueError("XML allowed_elements must include root and required children")
     try:
         # Contracts do not need DTDs or entity expansion.
@@ -920,8 +930,13 @@ def _check_xml(content: str, schema: dict | None, **_: object) -> dict:
     except (ET.ParseError, ValueError) as error:
         return {"xml_valid": False, "xml_error": str(error), "missing_elements": required,
                 "unknown_elements": [], "root_matches": False, "structurally_bad": True}
-    missing = [name for name in required if root.find(name) is None]
     unknown = sorted({node.tag for node in root.iter()} - allowed)
+    if mode == "any_of":
+        matched = [name for name in required if any("".join(node.itertext()).strip() for node in root.iter(name))]
+        return {"xml_valid": True, "xml_error": None, "root_matches": None,
+                "missing_elements": [name for name in required if name not in matched],
+                "unknown_elements": unknown, "matched_fields": matched, "structurally_bad": not matched}
+    missing = [name for name in required if root.find(name) is None]
     return {"xml_valid": True, "xml_error": None, "root_matches": root.tag == schema["root"],
             "missing_elements": missing, "unknown_elements": unknown,
             "structurally_bad": root.tag != schema["root"] or bool(missing or unknown)}
@@ -1169,7 +1184,7 @@ def check_output(intent: str, content: str, *, schema: dict | None = None,
     words = len(_tokens(text))
     scores["empty_visible_text"] = words == 0
     schema_valid_json = schema is not None and scores.get("json_valid") and not scores["schema_errors"]
-    scores["structurally_bad"] |= scores["empty_visible_text"] and not schema_valid_json
+    scores["structurally_bad"] |= scores["empty_visible_text"] and not (schema_valid_json or scores.get("matched_fields"))
     detected, confidence = detect_language(text)
     scores.update(output_kind=kind, words=words, detected_language=detected,
                   language_confidence=confidence,
@@ -1357,7 +1372,8 @@ def command_score(args: argparse.Namespace) -> int:
         if scores["structurally_bad"] or legacy_grammar_bad:
             reasons.append("invalid_output")
         if scores["words"] == 0:
-            if not (schema is not None and scores.get("json_valid") and not scores["schema_errors"]):
+            if not ((schema is not None and scores.get("json_valid") and not scores["schema_errors"])
+                    or scores.get("matched_fields")):
                 reasons.append("empty_visible_text")
         elif scores["words"] < 3:
             reasons.append("near_empty_visible_text")

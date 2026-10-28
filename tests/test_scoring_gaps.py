@@ -9,6 +9,64 @@ import evaluate as ev
 
 
 class ScoringGaps(unittest.TestCase):
+    def test_xml_any_of_accepts_nonempty_fields_at_any_depth(self):
+        from test_review_regressions import ReviewRegressions
+        schema = {"mode": "any_of", "fields": ["meaning", "evidence"]}
+        for content in (
+            "<other><wrapper><evidence> The gate is ready. </evidence></wrapper><extra/></other>",
+            "<meaning>The gate is ready.</meaning>",
+            "<other><meaning/><meaning><bold>The gate</bold> is ready.</meaning></other>",
+            "<other><meaning>...</meaning></other>",
+        ):
+            with self.subTest(content=content):
+                try:
+                    scores = ev.check_output("highlight_analysis", content, schema=schema)
+                except ValueError as error:
+                    scores = {"structurally_bad": str(error)}
+                self.assertFalse(scores["structurally_bad"], scores)
+                self.assertTrue(scores["xml_valid"])
+                self.assertIsNone(scores["root_matches"])
+                self.assertTrue(scores["matched_fields"])
+                result = ReviewRegressions().score([{"intent": "highlight_analysis", "content": content}], schema)
+                self.assertTrue(result["runs"][0]["usable"], result)
+
+    def test_xml_any_of_rejects_empty_fields_and_preserves_parse_guards(self):
+        schema = {"mode": "any_of", "fields": ["meaning", "evidence"]}
+        for content in (
+            "<other><meaning> \t\n </meaning><evidence/></other>",
+            '<other><meaning note="The gate is ready"/><extra>The gate is ready.</extra></other>',
+            "<other><wrapper>The gate is ready.</wrapper></other>",
+            "<other><meaning>The gate is ready.</other>",
+            '<!DOCTYPE other [<!ENTITY x "The gate is ready">]><other><meaning>&x;</meaning></other>',
+        ):
+            with self.subTest(content=content):
+                try:
+                    scores = ev.check_output("highlight_analysis", content, schema=schema)
+                except ValueError as error:
+                    scores = {"structurally_bad": str(error)}
+                self.assertIs(scores["structurally_bad"], True, scores)
+        for bad in ({"mode": "unknown"}, {"mode": "any_of", "fields": []},
+                    {"mode": "any_of", "fields": "meaning"},
+                    {"mode": "any_of", "fields": ["bad/name"]}):
+            with self.subTest(schema=bad):
+                with self.assertRaises(ValueError):
+                    ev.check_output("highlight_analysis", "<other/>", schema=bad)
+
+    def test_xml_strict_remains_the_default(self):
+        schema = {"root": "highlight", "children": ["meaning", "evidence"]}
+        for content, expected_bad in (
+            ("<highlight><meaning>The gate is ready.</meaning><evidence/></highlight>", False),
+            ("<other><meaning>The gate is ready.</meaning><evidence/></other>", True),
+            ("<highlight><meaning>The gate is ready.</meaning></highlight>", True),
+            ("<highlight><meaning>The gate is ready.</meaning><evidence/><extra/></highlight>", True),
+            ("<highlight><wrapper><meaning>The gate is ready.</meaning></wrapper><evidence/></highlight>", True),
+        ):
+            with self.subTest(content=content):
+                default = ev.check_output("highlight_analysis", content, schema=schema)
+                explicit = ev.check_output("highlight_analysis", content, schema={**schema, "mode": "strict"})
+                self.assertEqual(default, explicit)
+                self.assertEqual(default["structurally_bad"], expected_bad)
+
     def test_integer_speaker_labels_match_discovered_text_and_report_unknowns(self):
         schema = {"type": "array", "items": {"type": "object", "properties": {
             "label": {"type": ["string", "integer"]}, "name": {"type": "string"}}},
