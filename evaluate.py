@@ -1509,8 +1509,9 @@ def _judge_once(prompt: str, intent: str = "summary", model: str = DEFAULT_JUDGE
             timeout=900,
         )
         if completed.returncode != 0:
+            status = "HTTP 429: " if re.search(r"\b429\b", completed.stdout) else ""
             raise RuntimeError(
-                f"codex exec exited {completed.returncode}: {completed.stdout[-200:].strip()}"
+                f"codex exec exited {completed.returncode}: {status}{completed.stdout[-200:].strip()}"
             )
         output_file.seek(0)
         raw = output_file.read()

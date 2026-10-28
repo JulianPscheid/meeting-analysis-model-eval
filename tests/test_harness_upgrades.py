@@ -145,6 +145,13 @@ class JudgeReliability(unittest.TestCase):
         self.assertEqual(judge.call_count, 3)
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
 
+    def test_rate_limit_is_retained_when_cli_log_tail_has_no_status(self):
+        result = subprocess.CompletedProcess([], 1, "HTTP 429: rate limited\n" + "cleanup log\n" * 50, "")
+        with mock.patch.object(ev.subprocess, "run", return_value=result):
+            with self.assertRaises(RuntimeError) as caught:
+                ev._judge_once("invented prompt")
+        self.assertIn("429", str(caught.exception))
+
     def test_zero_judgments_threshold_and_bounded_concurrency(self):
         from test_contracts import Requests
         fixture = Requests()
