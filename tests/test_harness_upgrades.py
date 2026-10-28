@@ -16,6 +16,15 @@ import evaluate as ev
 
 
 class SamplerParity(unittest.TestCase):
+    def test_disabled_top_k_retains_legacy_negative_flag(self):
+        from test_contracts import Requests
+        fixture = Requests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        args = ev.build_parser().parse_args(fixture.argv() + ["--top-k", "-1"])
+        self.assertEqual(ev._sampler_settings(args, args.seed)["top_k"], 0,
+                         "the server reports its normalized disabled top-k value")
+
     def test_request_neutralizes_extra_stages_and_keys_them(self):
         from test_contracts import Requests
         fixture = Requests()

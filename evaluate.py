@@ -286,7 +286,7 @@ def reuse_key(
 
 def _sampler_settings(args: argparse.Namespace, seed: int) -> dict:
     # Neutral values verified against llama-server's request schema and generation_settings.
-    return {"temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k,
+    return {"temperature": args.temperature, "top_p": args.top_p, "top_k": max(0, args.top_k),
             "presence_penalty": args.presence_penalty, "seed": seed, "min_p": args.min_p,
             "repeat_last_n": args.n_ctx, "repeat_penalty": 1.0, "frequency_penalty": 0.0,
             "dry_multiplier": 0.0, "xtc_probability": 0.0, "typical_p": 1.0,
