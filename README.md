@@ -49,8 +49,11 @@ Notes on `run`:
 
 - `--trials` defaults to 3, and three is the minimum worth reading. One model emitted 1, 3, and 10 todos on three seeds of the same input; a single run would have hidden that.
 - `run` refuses to overwrite an existing `<label>.runs.jsonl`.
-- `--min-p` defaults to 0 and is always sent. Without it, `llama-server` applies its own default of 0.05, which most publisher settings do not use.
+- Sampling defaults to **app parity**: temperature, top-p, top-k, presence penalty and seed use the supplied values; `--min-p` defaults to 0. Extra stages are explicitly neutralized: `repeat_penalty=1`, `dry_multiplier=0`, `xtc_probability=0`, `typical_p=1`, `frequency_penalty=0`, `dynatemp_range=0`, `mirostat=0`, `top_n_sigma=-1`, and `adaptive_target=-1`. This overrides sampler defaults embedded in GGUF metadata.
+- The harness requests `verbose` generation settings and checks the server's echoed sampler values, allowing float roundoff. Missing or different values fail the run and prevent a reuse manifest. Each record stores requested `sampler_settings` and the full server-reported `generation_settings`; the manifest retains those reports in trial order. The field names and neutral values were checked against llama.cpp's request schema and settings serializer; a build lacking these fields is refused.
 - The request sets `repeat_last_n` to `--n-ctx`, so `llama-server` applies the presence penalty to the prompt as well as the output. An application sampler that penalizes only generated tokens behaves differently.
+- Completions stream. By default, the same 12-word span occurring six times within the last 512 whitespace-separated words stops a runaway with `finish="runaway_stopped"`. Detection covers visible output and reasoning separately. Configure `--runaway-repeats` (default 6; 0 disables), `--runaway-ngram` (12), and `--runaway-tail` (512; must fit the repeated spans). The partial output is retained; the server's `/slots` settings are captured before closing the stream. A failed snapshot prevents a reuse manifest. This conservative heuristic can still stop intentional repetition.
+- `--parallel N` defaults to 1. It starts `llama-server -np N`, runs at most N trials concurrently, and writes records in case/trial order with unchanged per-trial seeds. Total server context is `N × --n-ctx` to preserve each slot's context budget; KV memory grows accordingly. Parallelism is recorded in the manifest and records. Use serial runs for per-trial speed comparisons.
 - In prompt/transcript mode, the third message always ends with `/no_think`. Request-file messages are sent verbatim; the file owns any thinking instructions. For model families with a template thinking switch, also pass it, for example `--chat-template-kwargs '{"enable_thinking": false}'`. `reasoning_chars != 0` is scored as structurally bad unless `score --allow-reasoning` is used.
 - When every trial finishes without an error, `run` also writes `<label>.manifest.json`; see [Reuse a stored arm](#reuse-a-stored-arm).
 
@@ -71,6 +74,14 @@ python3 evaluate.py judge \
   --transcript /path/to/transcript.txt --out results/judge.json \
   results/candidate.runs.jsonl results/incumbent.runs.jsonl
 ```
+
+`--judge-model` defaults to the pinned slug `gpt-6.1-sol`, passed to `codex exec -m`.
+Judge output records that model and the Codex CLI version. `--judge-concurrency N`
+defaults to 1 and bounds concurrent judgments while retaining input order.
+HTTP 429 failures retry with 1, 2 and 4 second backoffs (four attempts total);
+other failures get the existing single retry. Zero judged trials always exits
+nonzero; otherwise errors above `--max-judge-errors` (default 0) exit nonzero.
+Even tolerated errors leave affected aggregate findings null.
 
 Measure speed or KV allocation after choosing explicit settings:
 
@@ -258,7 +269,10 @@ when fewer than three profile words occur or the leading profiles tie.
 by the winning count, not a calibrated probability. Short names, ids and mixed
 languages are often inconclusive. A different detected language sets
 `wrong_language`; `--strict-language` makes that a structural failure. Strict mode
-requires --expect-language; abstention still needs human review. Keep using
+requires --expect-language; a detected wrong language also makes output unusable
+without strict mode. Abstention still needs human review. When a language is
+expected, the scorer checks detectable heading language and copied prompt headings
+whose source language differs. Short or ambiguous headings can escape detection. Keep using
 `--translated-headings` for the existing summary/notes copied-heading check.
 
 ### Evaluating every on-device job
@@ -317,6 +331,19 @@ With that flag, an H2 heading copied verbatim from the prompt is listed in `untr
 
 ## Read the results
 
+Start with `usable` / `unusable` counts per arm and case. When exactly two arms are
+scored, a side-by-side tally prints to stderr; stdout remains JSON. Compare against
+the alternative at the same model-file size; a candidate need only improve on that
+baseline. Every scored trial has `usable` and `unusable_reasons`. Reasons cover
+invalid output, empty visible text, near-empty text (one or two word tokens),
+truncation, runaway repetition (a 12-word span occurring at least six times),
+reasoning leakage, wrong language or untranslated headings, run errors and
+incomplete or mismatched records. `score --expect-no-todos` additionally makes any
+summary `user_todos` entry unusable. `--allow-reasoning` retains its existing opt-out.
+These mechanical counts are a starting point; legitimate very short answers and
+language abstentions still need review. Existing structural and diagnostic fields
+remain available.
+
 A structurally clean run passed a narrow envelope and Markdown check. It is not a quality pass.
 
 - `prompt_leaks` lists output spans that share an eight-word run with the prompt but not with the transcript. It covers the summary title and recap body as well as notes, because models copy example sentences into prose that a reader sees, not only into todos. Todos copied whole from the prompt show `text_verbatim_in_prompt`. Also grep the output for your prompt's example names and numbers, which can leak in fragments shorter than eight words.
@@ -342,11 +369,24 @@ To inspect a GGUF's architecture, embedded chat template, and control tokens, us
 
 Record load average, memory pressure, and swap before each arm. If the host is contended, skip `bench.sh` rather than publishing absolute numbers. The `score` summary includes median and minimum `prompt_per_second` and `predicted_per_second` from the quality runs; report those as ratios between arms run in the same session, with the minimums as floors, since both arms carried the same load. This does not hold for an arm reused from another session, and KV allocation still needs a quiet host.
 
+Trials from `--parallel N` with N > 1 retain raw timings for diagnostics but are
+excluded from these speed summaries because slots contend for resources. Early
+stops may have no final usage or timings. Judge concurrency, streamed runaway
+cancellation, avoiding a second read of results to build the manifest, and promptly
+terminating the owned server on interruption also reduce avoidable waiting or I/O.
+
 ## Reuse a stored arm
 
 Re-running the same incumbent for every candidate is slow. After all trials finish without an error, `run` writes `<label>.manifest.json` with a `reuse_key` and its SHA-256; a new run first removes any earlier manifest for its label, so a failed or interrupted run leaves none. The key covers the host, the `llama-server` version and the hashes of the binary and the shared libraries beside it (after resolving a symlinked `--server`), the `evaluate.py` hash, the model hash, the prompt, grammar, and transcript hashes, a hash of the exact messages sent (so it follows the context file, or `--duration`, `--app-user`, and `--language` when there is none), the template kwargs, sampling, `--n-ctx`, `--max-tokens`, `--batch`, `--gpu-layers`, `--require-metal`, `--swa-full`, the starting seed, and the trial count. Hashing the model reads the whole file once.
 
-To check whether a stored arm can stand in, run the same `run` command with `--key-only`, which prints the manifest without starting the server, and compare `reuse_key_sha256` with the stored manifest's. Reuse the stored `*.runs.jsonl` only when they are equal. Any difference, including an edited prompt or a newer `evaluate.py`, means running it again. Always re-run `score` and `judge`, and never use a reused arm's timings as speed evidence.
+The key now also includes every requested sampler control and the runaway-stop
+configuration, plus `parallel` when N > 1; serial mode adds no parallel key field.
+This changes old keys, as does the harness file hash. Runtime settings are kept
+outside the key, since `--key-only` starts no server; only settings verified against
+the keyed sampler controls can produce a reuse manifest. Disabled stages' secondary
+parameters and other server-reported settings remain in the full runtime report.
+
+To check whether a stored arm can stand in, run the same `run` command with `--key-only`, which prints the requested reuse key without starting the server, and compare `reuse_key_sha256` with the stored manifest's. Reuse the stored `*.runs.jsonl` only when they are equal. Any difference, including an edited prompt or a newer `evaluate.py`, means running it again. Always re-run `score` and `judge`, and never use a reused arm's timings as speed evidence.
 
 ## Shell notes
 
