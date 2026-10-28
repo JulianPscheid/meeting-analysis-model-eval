@@ -232,6 +232,11 @@ This small contract does not validate attributes, ordering or element counts.
   `output_id` and `output_text` can override the per-turn output pointers. Input
   paths start at `{"messages": [...]}`; output paths start at the parsed output.
   A pointer continuing into a message's content decodes that content as JSON.
+  For prose mixed with JSON, use an explicit `~json-tail` segment, for example
+  `/messages/0/content/~json-tail/turns`. It selects the last complete JSON object
+  or array in the string, skipping nested containers inside each decoded value;
+  surrounding prose and incomplete JSON candidates are ignored. No complete
+  container is an input-pointer error. Use `~0json-tail` for a literal key.
   Paths use JSON Pointer escaping (`~1` for `/`, `~0` for `~`) and array indices.
   The supplied structured fixture uses `/messages/1/content/turns`, `/turns`,
   `/id` and `/text`. Input ids must be unique strings or integers. Every source id

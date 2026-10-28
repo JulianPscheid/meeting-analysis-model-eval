@@ -952,11 +952,30 @@ def _check_notes(content: str, transcript: str, prompt: str | None, translated: 
     return result
 
 
+def _json_tail(text: str) -> object:
+    """Select the last complete JSON container, skipping decoded containers' contents."""
+    decoder, end, last = json.JSONDecoder(), 0, None
+    for match in re.finditer(r"[\[{]", text):
+        if match.start() < end:
+            continue
+        try:
+            _, end = decoder.raw_decode(text, match.start())
+            last = _json_load(text[match.start():end])
+        except ValueError:
+            continue
+    if last is None:
+        raise ValueError("no complete JSON object or array found")
+    return last
+
+
 def _pointer(value: object, path: str) -> object:
-    """JSON Pointer, decoding message content as JSON when a pointer continues into it."""
+    """JSON Pointer with automatic JSON decoding and an explicit ~json-tail segment."""
     if not isinstance(path, str) or (path and not path.startswith("/")):
         raise ValueError("paths must be JSON pointers (empty or starting with /)")
     for raw in path.split("/")[1:] if path else []:
+        if raw == "~json-tail" and isinstance(value, str):
+            value = _json_tail(value)
+            continue
         key = raw.replace("~1", "/").replace("~0", "~")
         if isinstance(value, str):
             value = _json_load(value)
