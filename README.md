@@ -228,7 +228,11 @@ This small contract does not validate attributes, ordering or element counts.
   regular expression. Names are matched after case/accent folding and collapsing
   whitespace runs on both sides, so `Mina  Vale` matches `Mina Vale`. Label
   discovery and comparison are case-insensitive, so `speaker 1` matches
-  `Speaker 1`. The default pattern recognizes `Speaker` plus a space and
+  `Speaker 1`. Integer output labels are compared as decimal strings against
+  the input pattern's full matches, so id `7` matches text label `7`; use a
+  numeric `input_labels_pattern` for numeric ids. `unknown_labels` reports
+  normalized strings; booleans are not integer ids. The default pattern recognizes
+  `Speaker` plus a space and
   digits. `unsupported_names` and
   `unknown_labels` make the output structurally bad. Null names are allowed when
   the schema permits them. Name occurrence is evidence of presence, not proof of

@@ -1083,8 +1083,8 @@ def _speaker_scores(content: str, messages: list[dict], schema: dict) -> dict:
             folded_name = " ".join(_fold(name).split())
             if not re.search(r"(?<!\w)" + re.escape(folded_name) + r"(?!\w)", folded):
                 unsupported.append(name)
-        if isinstance(label, str) and label.casefold() not in known:
-            unknown.append(label)
+        if type(label) in (str, int) and str(label).casefold() not in known:
+            unknown.append(str(label))
     return {"unsupported_names": sorted(set(unsupported)), "unknown_labels": sorted(set(unknown))}
 
 

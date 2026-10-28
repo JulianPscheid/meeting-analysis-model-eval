@@ -9,6 +9,25 @@ import evaluate as ev
 
 
 class ScoringGaps(unittest.TestCase):
+    def test_integer_speaker_labels_match_discovered_text_and_report_unknowns(self):
+        schema = {"type": "array", "items": {"type": "object", "properties": {
+            "label": {"type": ["string", "integer"]}, "name": {"type": "string"}}},
+            "x-eval": {"speakers": {"mappings": "", "label": "/label", "name": "/name",
+                                     "input_labels_pattern": r"(?<=speaker_id=)\d+"}}}
+        messages = [{"role": "user", "content": "speaker_id=7: Ari Lane is ready."}]
+        for label in (7, "7"):
+            with self.subTest(known=label):
+                scores = ev.check_output("speaker_identification", json.dumps([
+                    {"label": label, "name": "Ari Lane"}]), schema=schema, messages=messages)
+                self.assertEqual(scores["unknown_labels"], [])
+                self.assertFalse(scores["structurally_bad"], scores)
+        content = json.dumps([{"label": label, "name": "Ari Lane"} for label in (9, "10", 9, "10")])
+        scores = ev.check_output("speaker_identification", content, schema=schema, messages=messages)
+        self.assertEqual(scores["unknown_labels"], ["10", "9"])
+        self.assertTrue(scores["structurally_bad"], scores)
+        # Booleans are not integer ids, even though Python bool subclasses int.
+        self.assertEqual(ev._speaker_scores('[{"label":true}]', messages, schema)["unknown_labels"], [])
+
     def test_schema_valid_json_without_words_is_clean_and_usable(self):
         from test_review_regressions import ReviewRegressions
         cases = (
