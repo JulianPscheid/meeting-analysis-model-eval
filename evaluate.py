@@ -133,7 +133,7 @@ def _assert_metal(log_path: pathlib.Path, server: str | None = None) -> None:
         [server, "--list-devices"], capture_output=True, text=True, timeout=120
     )
     devices = f"{listing.stdout}\n{listing.stderr}"
-    if not re.search(r"^\s*MTL\d+:.*Apple", devices, re.IGNORECASE | re.MULTILINE):
+    if not re.search(r"^\s*(?:-\s*)?MTL\d+\s*:.*Apple", devices, re.IGNORECASE | re.MULTILINE):
         raise RuntimeError(
             "no Apple Metal device in `--list-devices`; refusing CPU/BLAS fallback.\n"
             f"{devices.strip()[:500]}"
