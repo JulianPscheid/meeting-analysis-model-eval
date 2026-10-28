@@ -17,6 +17,7 @@ import hashlib
 import html
 import io
 import json
+import math
 import pathlib
 import platform
 import re
@@ -210,6 +211,7 @@ def reuse_key(
         "top_k": args.top_k,
         "min_p": args.min_p,
         "presence_penalty": args.presence_penalty,
+        "sampler_settings": _sampler_settings(args, args.seed),
         "n_ctx": args.n_ctx,
         "max_tokens": args.max_tokens,
         "batch": args.batch,
@@ -219,6 +221,25 @@ def reuse_key(
         "seed": args.seed,
         "trials": args.trials,
     }
+
+
+def _sampler_settings(args: argparse.Namespace, seed: int) -> dict:
+    # Neutral values verified against llama-server's request schema and generation_settings.
+    return {"temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k,
+            "presence_penalty": args.presence_penalty, "seed": seed, "min_p": args.min_p,
+            "repeat_last_n": args.n_ctx, "repeat_penalty": 1.0, "frequency_penalty": 0.0,
+            "dry_multiplier": 0.0, "xtc_probability": 0.0, "typical_p": 1.0,
+            "dynatemp_range": 0.0, "mirostat": 0, "top_n_sigma": -1.0,
+            "adaptive_target": -1.0}
+
+
+def _verify_sampler(reported: dict, requested: dict) -> None:
+    for field, expected in requested.items():
+        if field not in reported:
+            raise ValueError(f"generation_settings missing sampler field {field}")
+        actual = reported[field]
+        if not isinstance(actual, (int, float)) or not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-7):
+            raise ValueError(f"generation_settings {field}={actual!r}, requested {expected!r}")
 
 
 def _first_choice(response: dict) -> dict:
@@ -387,10 +408,8 @@ def command_run(args: argparse.Namespace) -> int:
                         grammar = case["grammar"]
                         body = {
                             "messages": case["messages"], "max_tokens": case["maxTokens"],
-                            "temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k,
-                            "min_p": args.min_p, "presence_penalty": args.presence_penalty,
-                            "repeat_last_n": args.n_ctx, "seed": seed, "cache_prompt": False,
-                            "stream": False,
+                            **_sampler_settings(args, seed), "cache_prompt": False,
+                            "stream": False, "verbose": True,
                         }
                         if grammar is not None:
                             body["grammar"] = grammar
@@ -405,6 +424,8 @@ def command_run(args: argparse.Namespace) -> int:
                             "transcript_sha256": _sha256_text(transcript),
                             "finish": None, "content": "", "reasoning_chars": 0,
                             "usage": None, "timings": None, "error": None,
+                            "sampler_settings": _sampler_settings(args, seed),
+                            "generation_settings": None,
                         }
                         if args.request_file:
                             record.update(input_mode="request_file", case_label=case["label"],
@@ -414,6 +435,8 @@ def command_run(args: argparse.Namespace) -> int:
                         started = time.monotonic()
                         try:
                             response = _post_json(url, body, args.request_timeout)
+                            record["generation_settings"] = response.get("generation_settings", response.get("__verbose", {}).get("generation_settings"))
+                            _verify_sampler(record["generation_settings"] or {}, record["sampler_settings"])
                             choice = _first_choice(response)
                             message = choice.get("message") or {}
                             record.update(finish=choice.get("finish_reason"),
@@ -438,7 +461,9 @@ def command_run(args: argparse.Namespace) -> int:
                 process.wait()
     # Only a complete, error-free run gets a reuse key; a killed or failed run leaves none.
     if not failed:
-        (out / f"{label}.manifest.json").write_text(rendered_manifest, encoding="utf-8")
+        manifest["generation_settings"] = [json.loads(line)["generation_settings"]
+                                           for line in results_path.read_text(encoding="utf-8").splitlines()]
+        (out / f"{label}.manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return 1 if failed else 0
 
 
@@ -1748,6 +1773,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         finish = None if body["max_tokens"] == 3 else "stop"
         reply = {{"choices": [{{"finish_reason": finish, "message": {{"content": "ok"}}}}]}}
+        reply["generation_settings"] = {{k: v for k, v in body.items() if k not in
+            ("messages", "max_tokens", "stream", "verbose", "cache_prompt", "grammar", "chat_template_kwargs")}}
         data = json.dumps(reply).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(data)))
@@ -1812,7 +1839,8 @@ http.server.HTTPServer(("127.0.0.1", port), Handler).serve_forever()
         assert command_run(build_parser().parse_args(run_argv())) == 0
         assert len((temp_path / "out/incumbent.runs.jsonl").read_text().splitlines()) == 2
         manifest = json.loads((temp_path / "out/incumbent.manifest.json").read_text())
-        assert manifest == changed
+        assert manifest["reuse_key"] == changed["reuse_key"]
+        assert len(manifest["generation_settings"]) == 2
         failing = run_argv(out="failed")
         failing[failing.index("512")] = "3"
         assert command_run(build_parser().parse_args(failing)) == 1

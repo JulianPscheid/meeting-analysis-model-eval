@@ -250,7 +250,8 @@ class Requests(unittest.TestCase):
             sent=[]
             def reply(url,body,timeout):
                 sent.append(body)
-                return {'choices':[{'finish_reason':'stop','message':{'content':'ok'}}]}
+                return {'choices':[{'finish_reason':'stop','message':{'content':'ok'}}],
+                        '__verbose': {'generation_settings': ev._sampler_settings(args, body['seed'])}}
             args.key_only=False
             with mock.patch.object(ev.subprocess,'Popen'),mock.patch.object(ev,'_free_port',return_value=12345),mock.patch.object(ev,'_wait_for_completion'),mock.patch.object(ev,'_assert_metal'),mock.patch.object(ev,'_post_json',side_effect=reply):
                 self.assertEqual(ev.command_run(args),0)
@@ -266,7 +267,9 @@ class Requests(unittest.TestCase):
             records=[json.loads(line) for line in (self.root/'out/arm.runs.jsonl').read_text().splitlines()]
             self.assertEqual([r['case_label'] for r in records],['case one']*2+['case two']*2)
             self.assertTrue(all(r['prompt_sha256']==ev._file_sha256(self.request) for r in records))
-            self.assertEqual(json.loads((self.root/'out/arm.manifest.json').read_text()),original)
+            manifest=json.loads((self.root/'out/arm.manifest.json').read_text())
+            self.assertEqual(manifest['reuse_key_sha256'],original['reuse_key_sha256'])
+            self.assertEqual(len(manifest['generation_settings']),4)
         print('request-file reuse_key: messages, grammar, maxTokens and exact source bytes covered')
 
     def test_feedback_verdict_distribution_across_trials(self):
