@@ -175,11 +175,11 @@ Every output reports `reasoning_chars`, `reasoning_leak`, `prompt_leaks`, `words
 `words` counts Unicode word tokens in visible text (JSON string values or XML
 text, excluding field names, tags and XML attributes). Zero words sets
 `empty_visible_text: true` and makes output structurally bad, including
-whitespace, zero-width characters and punctuation-only output such as `...`,
-except when JSON validates against a supplied schema or an XML `any_of` field
-matches. Such output (including numeric/boolean JSON, empty arrays or
-schema-permitted empty strings) keeps the diagnostic but is not structurally
-bad or unusable solely for zero words.
+whitespace, zero-width characters and punctuation-only output such as `...`.
+The one exception is JSON that validates against a supplied schema and has no
+string values at all (numbers, booleans, null, empty containers): it keeps the
+diagnostic but is not structurally bad or unusable solely for zero words. Any
+string value without words, including `""`, still counts as empty.
 Other structure, completion and reasoning checks still apply. Non-empty output
 with fewer than three words retains the near-empty usability check.
 Incomplete/non-stop responses, invalid structure and reasoning leakage also make
@@ -228,8 +228,8 @@ trimmed text (including descendant text; attributes do not count). Other root
 names and unknown elements are tolerated; absent or all-empty listed fields
 fail. `matched_fields` lists successful fields, `missing_elements` lists the rest,
 and `root_matches` is null for parsed any-of output. `unknown_elements` remains a
-diagnostic. A matched field suffices even if its text has no word tokens; other
-completion, reasoning and nonzero near-empty usability checks still apply.
+diagnostic. A matched field whose text has no word tokens is still empty output;
+other completion, reasoning and near-empty usability checks still apply.
 
 `x-eval` holds generic job metadata alongside the JSON schema:
 

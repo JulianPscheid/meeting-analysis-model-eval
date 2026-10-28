@@ -1127,6 +1127,27 @@ INTENTS = {
 }
 
 
+def _wordless_by_design(content: str, kind: str, schema: dict | None, scores: dict) -> bool:
+    """Schema-valid JSON with no text fields at all (numbers, booleans, empty containers) is not empty
+    output; any text field without words still is, and so is wordless XML."""
+    if kind != "json" or schema is None or not scores.get("json_valid") or scores["schema_errors"]:
+        return False
+    try:
+        value = _json_load(_unfence(content)[0])
+    except ValueError:
+        return False
+    stack = [value]
+    while stack:
+        item = stack.pop()
+        if isinstance(item, str):
+            return False
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
+
+
 def _visible_text(content: str, kind: str) -> str:
     if kind == "json":
         try:
@@ -1183,8 +1204,7 @@ def check_output(intent: str, content: str, *, schema: dict | None = None,
         scores["structurally_bad"] |= bool(fenced or errors)
     words = len(_tokens(text))
     scores["empty_visible_text"] = words == 0
-    schema_valid_json = schema is not None and scores.get("json_valid") and not scores["schema_errors"]
-    scores["structurally_bad"] |= scores["empty_visible_text"] and not (schema_valid_json or scores.get("matched_fields"))
+    scores["structurally_bad"] |= scores["empty_visible_text"] and not _wordless_by_design(content, kind, schema, scores)
     detected, confidence = detect_language(text)
     scores.update(output_kind=kind, words=words, detected_language=detected,
                   language_confidence=confidence,
@@ -1372,8 +1392,7 @@ def command_score(args: argparse.Namespace) -> int:
         if scores["structurally_bad"] or legacy_grammar_bad:
             reasons.append("invalid_output")
         if scores["words"] == 0:
-            if not ((schema is not None and scores.get("json_valid") and not scores["schema_errors"])
-                    or scores.get("matched_fields")):
+            if not _wordless_by_design(content, INTENTS[intent]["kind"], schema, scores):
                 reasons.append("empty_visible_text")
         elif scores["words"] < 3:
             reasons.append("near_empty_visible_text")

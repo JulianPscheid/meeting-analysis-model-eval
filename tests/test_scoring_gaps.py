@@ -16,7 +16,6 @@ class ScoringGaps(unittest.TestCase):
             "<other><wrapper><evidence> The gate is ready. </evidence></wrapper><extra/></other>",
             "<meaning>The gate is ready.</meaning>",
             "<other><meaning/><meaning><bold>The gate</bold> is ready.</meaning></other>",
-            "<other><meaning>...</meaning></other>",
         ):
             with self.subTest(content=content):
                 try:
@@ -94,7 +93,7 @@ class ScoringGaps(unittest.TestCase):
             ([], {"type": "array", "items": {"type": "integer"}}),
             ([0, False], {"type": "array", "items": {"type": ["integer", "boolean"]}}),
             (0, {"type": "integer"}), (False, {"type": "boolean"}),
-            (None, {"type": "null"}), ("", {"type": "string"}),
+            (None, {"type": "null"}),
         )
         for value, schema in cases:
             with self.subTest(value=value):
@@ -107,6 +106,20 @@ class ScoringGaps(unittest.TestCase):
                 self.assertTrue(result["runs"][0]["usable"], result)
                 self.assertEqual(result["runs"][0]["unusable_reasons"], [])
                 self.assertEqual(result["summary"]["arm"]["usable"], 1)
+
+    def test_schema_valid_wordless_text_stays_unusable(self):
+        # Only payloads with no text fields at all are exempt; text that carries no words is still empty.
+        cases = (("", {"type": "string"}),
+                 ({"suggestion": "..."}, {"type": "object", "properties": {"suggestion": {"type": "string"}}}),
+                 ({"suggestion": " \u200b"}, {"type": "object"}))
+        for value, schema in cases:
+            with self.subTest(value=value):
+                scores = ev.check_output("feedback_analysis", json.dumps(value), schema=schema)
+                self.assertEqual(scores["schema_errors"], [])
+                self.assertTrue(scores["structurally_bad"], scores)
+        xml_schema = {"mode": "any_of", "fields": ["title", "insight"]}
+        scores = ev.check_output("highlight_analysis", "<analysis><title>...</title></analysis>", schema=xml_schema)
+        self.assertTrue(scores["structurally_bad"], scores)
 
     def test_empty_json_keeps_other_failure_gates(self):
         from test_review_regressions import ReviewRegressions

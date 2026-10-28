@@ -59,7 +59,8 @@ class ReviewRegressions(unittest.TestCase):
             with self.subTest(intent=intent):
                 scores = ev.check_output(intent, content, schema=schema, messages=messages)
                 self.assertEqual(scores["words"], 0)
-                self.assertEqual(scores["structurally_bad"], spec["kind"] != "json", scores)
+                # Only a payload with no text fields at all (an empty speaker list) is exempt.
+                self.assertEqual(scores["structurally_bad"], intent != "speaker_identification", scores)
                 self.assertIs(scores["empty_visible_text"], True)
 
     def test_zero_words_are_bad_for_whitespace_and_punctuation(self):
