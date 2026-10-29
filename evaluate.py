@@ -963,7 +963,7 @@ def _check_notes(content: str, transcript: str, prompt: str | None, translated: 
     result = score_notes_content(content, _prompt_headings(prompt or ""), "prompt" if prompt else "none",
                                  prompt, transcript, translated)
     result["structurally_bad"] = (not result["markdown_contract"] or bool(result["duplicate_sections"])
-                                  or result["duplicate_12grams"] > 0)
+                                  or result["worst_12gram"] >= 6)
     return result
 
 

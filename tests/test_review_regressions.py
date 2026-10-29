@@ -36,6 +36,46 @@ class ReviewRegressions(unittest.TestCase):
                 self.assertEqual(ev.command_score(args), 0)
             return json.loads(printed.getvalue())
 
+    def test_long_notes_allow_three_repeated_spans(self):
+        words = [f"detail{index}" for index in range(3996)]
+        for start in (1000, 2000, 3000):
+            words[start:start + 12] = words[start - 100:start - 88]
+        content = "# Session\n## Details\n" + " ".join(words)
+        self.assertEqual(len(content.split()), 4000)
+        row = self.score([{"intent": "notes", "grammar": "off", "content": content}])["runs"][0]
+        self.assertEqual(row["duplicate_12grams"], 3)
+        self.assertEqual(row["worst_12gram"], 2)
+        self.assertFalse(row["structurally_bad"])
+        self.assertTrue(row["usable"], row["unusable_reasons"])
+
+    def test_notes_paragraph_loop_remains_unusable(self):
+        paragraph = "The team reviewed the budget and agreed to discuss the remaining open questions tomorrow. "
+        for repeats in (5, 6):
+            with self.subTest(repeats=repeats):
+                content = "# Session\n## Details\n" + paragraph * repeats
+                row = self.score([{"intent": "notes", "grammar": "off", "content": content}])["runs"][0]
+                self.assertEqual(row["worst_12gram"], repeats)
+                self.assertEqual(row["structurally_bad"], repeats >= 6)
+                self.assertEqual(row["usable"], repeats < 6)
+                self.assertEqual("runaway_repetition" in row["unusable_reasons"], repeats >= 6)
+        row = self.score([{"intent": "notes", "grammar": "off", "content": "# Session\nFacts were recorded.",
+                           "finish": "runaway_stopped"}])["runs"][0]
+        self.assertFalse(row["usable"])
+        self.assertIn("runaway_repetition", row["unusable_reasons"])
+
+    def test_recap_repetition_scoring_is_unchanged(self):
+        paragraph = "The team reviewed the budget and agreed to discuss the remaining open questions tomorrow. "
+        for repeats in (2, 6):
+            with self.subTest(repeats=repeats):
+                content = json.dumps({"title": "Budget review", "recap_markdown": "## Brief\n" + paragraph * repeats,
+                                      "user_todos": []})
+                row = self.score([{"intent": "summary", "grammar": "on", "content": content}])["runs"][0]
+                self.assertGreater(row["duplicate_12grams"], 0)
+                self.assertEqual(row["worst_12gram"], repeats)
+                self.assertFalse(row["structurally_bad"])
+                self.assertEqual(row["usable"], repeats < 6)
+                self.assertEqual("runaway_repetition" in row["unusable_reasons"], repeats >= 6)
+
     def test_zero_word_visible_output_reports_field_for_every_intent(self):
         for intent, spec in ev.INTENTS.items():
             schema, messages = None, []
