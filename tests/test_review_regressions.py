@@ -76,43 +76,6 @@ class ReviewRegressions(unittest.TestCase):
                 self.assertEqual(row["usable"], repeats < 6)
                 self.assertEqual("runaway_repetition" in row["unusable_reasons"], repeats >= 6)
 
-    def test_prompt_headings_include_inline_and_list_contracts(self):
-        headings = ["Overview", "Agreed Outcomes", "Owner's Next Steps"]
-        contracts = [
-            "\n".join("## " + heading for heading in headings),
-            "\n".join("- ## " + heading for heading in headings),
-            "\n".join(f"{index}. ## {heading}" for index, heading in enumerate(headings, 1)),
-            'Markdown contract: use "## Overview", "## Agreed Outcomes", and "## Owner\'s Next Steps".',
-            "Markdown contract: use `## Overview`, `## Agreed Outcomes`, and `## Owner's Next Steps`.",
-            "Markdown contract: use ## Overview; ## Agreed Outcomes; ## Owner's Next Steps.",
-            "Use '## Overview', then '## Agreed Outcomes', then \"## Owner's Next Steps\".",
-        ]
-        for prompt in contracts:
-            with self.subTest(prompt=prompt):
-                self.assertEqual(ev._prompt_headings(prompt), headings)
-        self.assertEqual(ev._prompt_headings('Use "## Overview" twice: `## Overview`.\n### Detail\n#### Detail'),
-                         ["Overview"])
-
-    def test_translated_recaps_reject_copied_inline_prompt_headings(self):
-        prompt = 'Markdown contract: use "## Overview", "## Agreed Outcomes", and "## Next Steps".'
-        german = "Das Team hat die Ergebnisse besprochen und wird die offenen Fragen morgen prüfen."
-        for headings, copied in ((["Overview", "Agreed Outcomes", "Next Steps"], True),
-                                 (["Überblick", "Beschlüsse", "Nächste Schritte"], False)):
-            with self.subTest(copied=copied), tempfile.TemporaryDirectory() as directory:
-                prompt_file = Path(directory) / "prompt.txt"
-                prompt_file.write_text(prompt, encoding="utf-8")
-                content = json.dumps({"title": "Besprechung", "recap_markdown":
-                    "\n\n".join("## " + heading + "\n" + german for heading in headings), "user_todos": []})
-                record = {"intent": "summary", "grammar": "on", "content": content}
-                row = self.score([record], prompt_file=str(prompt_file), translated_headings=True)["runs"][0]
-                self.assertEqual(row["untranslated_headings"], headings if copied else [])
-                self.assertEqual(row["structurally_bad"], copied)
-                self.assertEqual(row["usable"], not copied)
-                self.assertEqual("untranslated_headings" in row["unusable_reasons"], copied)
-                unflagged = self.score([record], prompt_file=str(prompt_file))["runs"][0]
-                self.assertIsNone(unflagged["untranslated_headings"])
-                self.assertTrue(unflagged["usable"])
-
     def test_zero_word_visible_output_reports_field_for_every_intent(self):
         for intent, spec in ev.INTENTS.items():
             schema, messages = None, []

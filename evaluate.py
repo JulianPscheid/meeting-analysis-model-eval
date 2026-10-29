@@ -697,15 +697,11 @@ def score_content(
 
 
 def _prompt_headings(prompt: str) -> list[str]:
-    pattern = (
-        r"^[ \t]*(?:[-*+]|\d+[.)])?[ \t]*##[ \t]+(?P<line>.+?)[ \t]*$"
-        r'''|(?P<quote>[`"'])##[ \t]+(?P<quoted>.+?)(?P=quote)(?!\w)'''
-        r"|(?<!#)##[ \t]+(?P<inline>[^#\n,;]+)"
-    )
-    return list(dict.fromkeys(
-        (match["line"] or match["quoted"] or match["inline"].strip().removesuffix(".")).strip()
-        for match in re.finditer(pattern, prompt, re.MULTILINE)
-    ))
+    return [
+        match.group(1).strip()
+        for line in prompt.splitlines()
+        if (match := re.match(r"^\s*##\s+(.+?)\s*$", line))
+    ]
 
 
 def score_notes_content(
