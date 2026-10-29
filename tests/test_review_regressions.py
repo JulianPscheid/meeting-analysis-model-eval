@@ -50,14 +50,20 @@ class ReviewRegressions(unittest.TestCase):
 
     def test_notes_paragraph_loop_remains_unusable(self):
         paragraph = "The team reviewed the budget and agreed to discuss the remaining open questions tomorrow. "
-        for repeats in (5, 6):
+        for repeats in (3, 5, 6):
             with self.subTest(repeats=repeats):
                 content = "# Session\n## Details\n" + paragraph * repeats
                 row = self.score([{"intent": "notes", "grammar": "off", "content": content}])["runs"][0]
                 self.assertEqual(row["worst_12gram"], repeats)
-                self.assertEqual(row["structurally_bad"], repeats >= 6)
-                self.assertEqual(row["usable"], repeats < 6)
+                self.assertTrue(row["structurally_bad"], row)
+                self.assertFalse(row["usable"])
                 self.assertEqual("runaway_repetition" in row["unusable_reasons"], repeats >= 6)
+        # A long block pasted five times stays below worst_12gram 6 but is mostly duplicated text.
+        block = " ".join(f"point{index}" for index in range(200)) + "\n"
+        row = self.score([{"intent": "notes", "grammar": "off",
+                           "content": "# Session\n## Details\n" + block * 5}])["runs"][0]
+        self.assertEqual(row["worst_12gram"], 5)
+        self.assertFalse(row["usable"], row)
         row = self.score([{"intent": "notes", "grammar": "off", "content": "# Session\nFacts were recorded.",
                            "finish": "runaway_stopped"}])["runs"][0]
         self.assertFalse(row["usable"])

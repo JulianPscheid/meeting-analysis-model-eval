@@ -962,8 +962,12 @@ def _check_summary(content: str, transcript: str, prompt: str | None, translated
 def _check_notes(content: str, transcript: str, prompt: str | None, translated: bool, **_: object) -> dict:
     result = score_notes_content(content, _prompt_headings(prompt or ""), "prompt" if prompt else "none",
                                  prompt, transcript, translated)
+    # Incidental repeats in long notes (a name and title, an agenda phrase) are a tiny share of all
+    # 12-grams; a pasted paragraph or block is a large share even below the worst_12gram >= 6 loop rule.
+    windows = max(1, len(content.split()) - 11)
+    result["duplicate_12gram_ratio"] = round(result["duplicate_12grams"] / windows, 4)
     result["structurally_bad"] = (not result["markdown_contract"] or bool(result["duplicate_sections"])
-                                  or result["worst_12gram"] >= 6)
+                                  or result["worst_12gram"] >= 6 or result["duplicate_12gram_ratio"] > 0.05)
     return result
 
 
