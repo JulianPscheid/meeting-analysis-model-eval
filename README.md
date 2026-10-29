@@ -354,6 +354,8 @@ python3 evaluate.py score --translated-headings \
 
 With that flag, an H2 heading copied verbatim from the prompt is listed in `untranslated_headings` and makes the run structurally bad, and notes need as many sections as the prompt names instead of its literal English names, which correctly translated output can never match. The check only catches copied prompt headings. Read the output for English prose, English sub-headings, or a heading that happens to be the same word in both languages. If your prompt names its sections in English while the context asks for another language, the prompt itself is ambiguous, and both arms usually show it; compare the arms before blaming one model.
 
+Prompt H2 names can appear on their own lines, in bullet or numbered lists, or inline in quotes or backticks (for example, `Use "## Overview" and "## Next Steps"`). Unquoted inline names end at a comma, semicolon, another heading marker, or the end of the line; a final sentence period is removed. Repeated references count once, and H3 or deeper markers are ignored. Summary and notes use the same extraction; copied headings match after case folding, while translated names do not match.
+
 ## Read the results
 
 Start with `usable` / `unusable` counts per arm and case. When exactly two arms are
